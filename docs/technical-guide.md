@@ -14,15 +14,14 @@ llama.cpp use, building, architecture, tuning, and standalone measurements.
 ## Requirements
 
 - Windows 11, or Linux (see [Linux](#linux) for what it needs there)
-- A Ryzen AI processor with an NPU. Only tested on Strix Point: the Ryzen AI
-  9 HX 370 with Radeon 890M graphics. At start the add-on runs a small test
+- A Ryzen AI processor with an NPU. Tested on Strix Point (Ryzen AI 9 HX 370
+  with Radeon 890M) and Strix Halo (Ryzen AI MAX+ 395 with Radeon 8060S).
+  At start the add-on runs a small test
   multiply on the NPU and turns on only if it gets it right, so it decides
   by what the NPU does, not by the chip's name (see
-  [Troubleshooting](#troubleshooting) if it turns itself off). Strix Halo
-  (Ryzen AI Max) and Krackan Point (Ryzen AI 7 350, Ryzen AI 5 340) have the
-  same NPU as Strix Point and should pass, but nobody has run it on one
-  yet. Strix Halo's GPU is much bigger, so there the GPU may be faster on
-  its own.
+  [Troubleshooting](#troubleshooting) if it turns itself off). Krackan Point
+  (Ryzen AI 7 350, Ryzen AI 5 340) has not been tested. On Strix Halo,
+  the GPU alone is currently faster on the tested Qwen3.8-27B prompt.
 - The AMD NPU driver. Tested with 32.0.20102.3930.
 - A GPU driver with Vulkan. Tested with Radeon driver 32.0.31041.1004.
 - llama.cpp release **b10944**, Vulkan build
@@ -241,7 +240,8 @@ C:\Windows\System32\AMD\xrt-smi.exe configure --pmode default
 ## Results
 
 Prompt reading speed with the add-on, against the GPU alone, both reading in
-2,048-token chunks (what `zest` uses). Ryzen AI 9 HX 370, measured 2026-10-05.
+2,048-token chunks (what `zest` uses). These are Strix Point results on the
+Ryzen AI 9 HX 370, measured 2026-10-05; the Strix Halo result is below.
 Each figure is the median of the per-round ratios, with the slowest and
 fastest round in brackets.
 
@@ -423,10 +423,10 @@ contexts of 32,768 tokens, and two models served at once by its router.
 
 ## Limitations
 
-- **Linux is untested on an NPU by us.** It builds and passes the tests
-  that need no NPU; see [Linux](#linux).
-- **Only tested on Strix Point.** Other Ryzen AI chips whose NPU passes the
-  test at start are let in, untested.
+- **Linux NPU coverage is limited.** Qwen3.8-27B was exercised on Strix Halo
+  with Linux; see [Linux](#linux).
+- **Tested on Strix Point and Strix Halo.** Other Ryzen AI chips whose NPU
+  passes the test at start are let in, untested.
 - **Prompt reading only.** Replies are written one token at a time, and that
   stays on the GPU.
 - **Pieces under 1,024 tokens stay on the GPU**, so short prompts don't use
@@ -445,18 +445,65 @@ contexts of 32,768 tokens, and two models served at once by its router.
 
   For those models, use the GPU alone (`-dev Vulkan0`, or llama.cpp without
   `zest`).
-- **Memory:** the NPU keeps its own 8-bit copy of each weight it uses,
-  about 1.1 GB per billion parameters, on top of llama.cpp's. It's built
-  in the background while the model loads, which takes a few seconds (4.4 s
-  for Qwen3-4B). llama-server is usually ready before the first request; a
-  prompt given on the command line waits for the rest.
+- **Memory:** the NPU keeps its own BFP16 copy of each weight it uses,
+  about 1.1 GB per billion parameters, on top of llama.cpp's. The loader
+  dequantizes one GGUF row at a time directly into the mapped NPU buffer,
+  without a full float32 or packed host copy. Model load waits for the
+  NPU buffers to finish, so the first request does not pay for them.
   The copies are kept within the memory free once the model is loaded, less
   4 GB or a tenth of the machine's memory, whichever is larger, and at most
   20 GB. When they don't all fit, the first layers that do go to the NPU
   and the rest stay on the GPU, and the add-on says so:
   `xdna: NPU weight copies limited to 20.0 GB (...): the first 49 layers on
   the NPU, the rest on the GPU`. `zest --memory-gb` (or
-  `GGML_XDNA_MAX_COPY_GB`) sets the limit.
+  `GGML_XDNA_MAX_COPY_GB`) sets the limit. This is load-time dequantization;
+  the shipped NPU kernel still reads BFP16 weight copies at execution.
+  Decoding raw GGUF weights on the NPU would need a new kernel.
+- **Strix Halo Qwen3.8-27B prefill:** in a clean Linux measurement of the
+  2,769-token UD-IQ3_S prompt, the GPU alone processed 278 tokens/s and
+  NPU assist processed 231 tokens/s after direct weight packing and fused
+  gate/up support. Restricting the NPU to the largest feed-forward matrices
+  reached 241 tokens/s; only gate/up reached 248 tokens/s, and only the down
+  projection reached 245 tokens/s. Attention-only fell to 231 tokens/s.
+  Matmul-only claiming fell to 194 tokens/s. Forcing
+  the same claimed pieces to run on Vulkan reached 262 tokens/s, which
+  isolates the cost of graph partitioning from NPU execution. Increasing
+  the NPU copy limit to hold all layers did not help. An experimental
+  concurrent token-row split reached only 231 tokens/s and was removed.
+  Sharing the NPU's activation buffer between grouped projections made no
+  measurable difference in a controlled run (255.42 versus 255.43 tokens/s)
+  and was removed.
+  Under that later clock regime, the paired GPU control was 299.60 tokens/s.
+  The measurements are
+  in [the Strix Halo result](results/halo-zest-qwen38-27b-2026-11-13.json).
+  A trace of one warm NPU request attributed about 1.2-1.3 s to NPU
+  submissions and waits and 1.3-1.5 s to host passes per roughly 200
+  matmuls. The host passes decode NPU outputs, run small graph operations,
+  and encode the next activation. A GPU/NPU output-column split, like the
+  one in yet-another-halo-engine, would let both devices work on a large
+  projection at once. Zest currently gives whole projections to one device,
+  so its earlier token-row split did not solve this staging cost. An isolated
+  concurrent output-column probe on the real `blk.2.ffn_down.weight` matrix
+  also lost through Zest's current host-staged backends: the full Vulkan
+  projection took about 8.4 ms for 1,024 rows, while three GPU/NPU splits
+  took 13.0, 13.0, and 14.8 ms. The combined result was within 1.4%
+  normalized RMS error of the full Vulkan output. Concurrent execution
+  alone did not remove host activation packing and device contention.
+  The GGUF is mixed quantization: IQ3_S holds 8.65 billion of its 27.32
+  billion tensor values (32%); IQ4_XS and IQ3_XXS each hold about 4.9
+  billion. An execution-time dequantization path must handle several weight
+  formats to replace the large BFP16 copies across the model. A standalone
+  AIE2P IQ3_S decoder now produces exactly the existing GEMM's BFP16 bytes
+  from 64 real GGUF rows. Its best clean time is 0.559 ms for just
+  64 x 256 weights on one core, so this scalar decoder is a format and
+  correctness prototype; it is not in the inference path. The production
+  decoder needs vectorized lookup and conversion, ideally streamed into
+  GEMM rather than writing a full expanded weight copy.
+  A later clean warm Lemonade pair with eight-row contiguous activation
+  encoding and AVX-512 pair conversion measured 257.86 GPU tokens/s and
+  232.80 NPU-assisted tokens/s. The clock regime differed from the 299.60
+  versus 255.43 control, so those absolute rates do not establish an
+  improvement; the NPU remains slower in both pairs.
 - **The NPU holds only so much.** On our 88 GB machine, once the NPU's
   memory passes 26 GB, some of it comes back damaged, with no error. That
   limit is the NPU's own: what the GPU uses doesn't change it. That's why
@@ -564,7 +611,7 @@ An empty value counts as unset.
 | `GGML_XDNA_KERNELS` | `bfp16_gemm.xclbin` next to the add-on | another xclbin |
 | `GGML_XDNA_MIN_BATCH` | 1024 | the smallest piece of a prompt, in tokens, the NPU takes (`zest --min-chunk` sets it) |
 | `GGML_XDNA_MIN_MFLOP` | 256 | the smallest multiply the NPU takes, in millions of operations |
-| `GGML_XDNA_COPY_AT_LOAD` | 1 | 0 builds the NPU's weight copies during the first prompt instead of while the model loads |
+| `GGML_XDNA_COPY_AT_LOAD` | 1 | 1 completes the NPU's weight copies before model load returns; 0 builds them during the first prompt |
 | `GGML_XDNA_MAX_COPY_GB` | memory free at load, less 4 GB or a tenth of memory, at most 20 | the most memory, in GB, the NPU's weight copies may take; 0 keeps the NPU out (`zest --memory-gb` sets it) |
 | `GGML_XDNA_BLOCKS` | 1 | 0 takes only the multiplies, not the steps between them |
 | `GGML_XDNA_STREAMS` | 2 | how many parts a piece is split into, so the CPU and NPU overlap |
@@ -612,6 +659,9 @@ writes everything to one log file. It's what we ask Linux testers to run.
 The NPU kernel ships prebuilt
 ([kernels/bfp16_gemm/prebuilt](../kernels/bfp16_gemm/prebuilt)). Rebuilding it
 needs AMD's IRON toolchain; see [kernels/bfp16_gemm/build.ps1](../kernels/bfp16_gemm/build.ps1).
+On Linux, [build-linux.sh](../kernels/bfp16_gemm/build-linux.sh) uses IRON
+1.4.3 and its Peano compiler to rebuild the same kernel. An `xclbin` built
+with these settings passed the wide NPU hardware test on Strix Halo.
 
 What the add-on must do, and how each part is checked, is in
 [specs/xdna-backend/spec.md](../specs/xdna-backend/spec.md).

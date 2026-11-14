@@ -1,4 +1,4 @@
-// The NPU side of the backend: each claimed weight's private 8-bit copy, and
+// The NPU side of the backend: each claimed weight's private BFP16 copy, and
 // the matmul itself, on the bfp16 kernel (npu/npu_bfp16.h, kernels/bfp16_gemm).
 //
 // The kernel is one core program (an xclbin of whole_array_bfp_rtp) that
@@ -50,10 +50,10 @@ public:
         int64_t K, N;
         bool operator<(const wkey & o) const;
     };
-    // Whether the weight's 8-bit copy exists already.
+    // Whether the weight's BFP16 copy exists already.
     bool has_weight(const wkey & key) const { return weights_.count(key) != 0; }
-    // Builds it from the weight's raw ggml bytes: unpacked with ggml, encoded,
-    // laid out for the kernel, and kept in its own NPU buffer. It runs in the
+    // Builds it from the weight's raw ggml bytes: each row is dequantized with
+    // ggml and encoded directly into its mapped NPU buffer. It runs in the
     // 16-bit output mode where that's built (half the bytes to read back;
     // GGML_XDNA_OUT16=0 keeps float32).
     bool add_weight(const wkey & key, const void * raw, std::string & err);
@@ -94,6 +94,7 @@ public:
     bool reserve(int stream, const std::vector<std::vector<wkey>> & groups, std::string & err);
     bool begin(int stream, const std::vector<wkey> & keys, int64_t rows, std::string & err);
     void encode_row(int stream, int64_t r, const float * row);
+    void encode_tile(int stream, int64_t r0, int64_t count, const float * const * rows);
     bool submit(int stream, std::string & err);
     bool wait(int stream, std::string & err);
     bool decode_row(int stream, int k, int64_t r, float * row) const;
@@ -103,7 +104,11 @@ public:
 
     // Time spent, since the last call: encoding activations, the NPU
     // (submit to done), reading its output, building weight copies.
-    struct times { double encode_ms = 0, npu_ms = 0, decode_ms = 0, pack_ms = 0; int calls = 0; };
+    struct times {
+        double encode_ms = 0, npu_ms = 0, decode_ms = 0, pack_ms = 0;
+        double weight_shape_ms = 0, weight_alloc_ms = 0, weight_encode_ms = 0, weight_upload_ms = 0;
+        int calls = 0;
+    };
     times take_times();
 
 private:
@@ -114,8 +119,9 @@ private:
         int mode = 0;                          // output mode: 0 float32, 1 bf16, 2 SiLU(gate) * up in bf16
     };
     int shape(int64_t M, int64_t K, int64_t N, int mode, std::string & err);
-    bool add_packed(const wkey & key, std::vector<float> & f, int64_t N, int64_t n_out, int mode, std::string & err);
-    void unpack(const void * raw, ggml_type type, int64_t N, int64_t K, float * dst);
+    bool add_packed(const wkey & key, int64_t N, int64_t n_out, int mode,
+                    const bfp16_row_loader & load_row, std::string & err);
+    static void unpack_row(const void * raw, ggml_type type, int64_t r, int64_t K, float * dst);
 
     std::unique_ptr<npu_bfp16> npu_;
     std::unique_ptr<npu_bfp16::batch> batch_;  // one matmul's calls; buffers only grow

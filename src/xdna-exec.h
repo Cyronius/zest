@@ -13,6 +13,7 @@
 
 #include "ggml.h"
 
+#include <atomic>
 #include <functional>
 #include <string>
 #include <utility>
@@ -48,6 +49,10 @@ struct xdna_io {
 // GGML_XDNA_TRACE.
 extern double xdna_pass_ms;
 extern int64_t xdna_passes;
+// Worker CPU time (summed across threads), enabled only by GGML_XDNA_TRACE.
+extern std::atomic<int64_t> xdna_decode_cpu_ns;
+extern std::atomic<int64_t> xdna_encode_cpu_ns;
+extern std::atomic<int64_t> xdna_op_cpu_ns[GGML_OP_COUNT];
 
 // Whether the executor implements this op, in this variant. The policy asks
 // this before claiming anything but a matmul.

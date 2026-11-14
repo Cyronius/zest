@@ -126,6 +126,82 @@ void bfp16_encode_block(const float * x, uint8_t * out) {
     }
 }
 
+#if defined(__AVX2__) && defined(__GNUC__) && defined(__x86_64__)
+// The activation tile offers pairs of neighboring rows at each K block. Zen 5
+// can convert both blocks with one 512-bit multiply, conversion, clamp and
+// saturating byte pack. The scalar exponent reduction remains separate because
+// each eight-value block has its own shared exponent.
+__attribute__((target("avx512f,avx512bw,avx512dq,avx512vl")))
+static void bfp16_encode_pair_avx512(const float * x0, const float * x1, uint8_t * out0, uint8_t * out1) {
+    const __m256 v0 = _mm256_loadu_ps(x0), v1 = _mm256_loadu_ps(x1);
+    auto max_exp = [](__m256 v) {
+        const __m256i e = _mm256_and_si256(_mm256_srli_epi32(_mm256_castps_si256(v), 23), _mm256_set1_epi32(0xff));
+        __m128i m = _mm_max_epi32(_mm256_castsi256_si128(e), _mm256_extracti128_si256(e, 1));
+        m = _mm_max_epi32(m, _mm_shuffle_epi32(m, _MM_SHUFFLE(1, 0, 3, 2)));
+        m = _mm_max_epi32(m, _mm_shuffle_epi32(m, _MM_SHUFFLE(2, 3, 0, 1)));
+        return _mm_cvtsi128_si32(m);
+    };
+    const int e0 = max_exp(v0), e1 = max_exp(v1);
+    const int s0 = 133 - e0 + 127, s1 = 133 - e1 + 127;
+    if (s0 < 1 || s0 > 254 || s1 < 1 || s1 > 254) {
+        bfp16_encode_block(x0, out0);
+        bfp16_encode_block(x1, out1);
+        return;
+    }
+    const __m512 v = _mm512_insertf32x8(_mm512_castps256_ps512(v0), v1, 1);
+    const __m512i scales = _mm512_mask_blend_epi32(0xff00, _mm512_set1_epi32(s0 << 23), _mm512_set1_epi32(s1 << 23));
+    __m512i q = _mm512_cvtps_epi32(_mm512_mul_ps(v, _mm512_castsi512_ps(scales)));
+    q = _mm512_min_epi32(_mm512_max_epi32(q, _mm512_set1_epi32(-128)), _mm512_set1_epi32(127));
+    const __m128i bytes = _mm512_cvtsepi32_epi8(q);
+    out0[0] = (uint8_t) e0;
+    out1[0] = (uint8_t) e1;
+    _mm_storel_epi64((__m128i *) (out0 + 1), bytes);
+    _mm_storel_epi64((__m128i *) (out1 + 1), _mm_srli_si128(bytes, 8));
+}
+
+__attribute__((target("avx512f,avx512bw,avx512dq,avx512vl")))
+static void bfp16_pack_a_tile_rows_avx512(const float * const * rows, int64_t r0, int64_t count,
+                                           int64_t K, const bfp16_tiling & t, uint8_t * out) {
+    const int64_t tkb = t.k / 8, nk = K / t.k, tile_blocks = t.m * tkb;
+    const int64_t base = (r0 / t.m) * nk * tile_blocks + ((r0 % t.m) / 16) * tkb * 16 + r0 % 16;
+    for (int64_t kk = 0; kk < nk; kk++) {
+        const int64_t first_cb = kk * tkb;
+        for (int64_t sx = 0; sx < tkb; sx++) {
+            uint8_t * dst = out + (base + kk * tile_blocks + sx * 16) * BFP16_BLOCK_BYTES;
+            const int64_t c = (first_cb + sx) * 8;
+            int64_t i = 0;
+            for (; i + 1 < count; i += 2)
+                bfp16_encode_pair_avx512(rows[i] + c, rows[i + 1] + c,
+                                         dst + i * BFP16_BLOCK_BYTES, dst + (i + 1) * BFP16_BLOCK_BYTES);
+            if (i < count) bfp16_encode_block(rows[i] + c, dst + i * BFP16_BLOCK_BYTES);
+        }
+    }
+}
+#endif
+
+void bfp16_pack_a_tile_rows(const float * const * rows, int64_t r0, int64_t count,
+                           int64_t K, const bfp16_tiling & t, uint8_t * out) {
+#if defined(__AVX2__) && defined(__GNUC__) && defined(__x86_64__)
+    static const bool avx512 = __builtin_cpu_supports("avx512f") && __builtin_cpu_supports("avx512bw") &&
+                               __builtin_cpu_supports("avx512dq") && __builtin_cpu_supports("avx512vl");
+    if (avx512) {
+        bfp16_pack_a_tile_rows_avx512(rows, r0, count, K, t, out);
+        return;
+    }
+#endif
+    const int64_t tkb = t.k / 8, nk = K / t.k, tile_blocks = t.m * tkb;
+    const int64_t base = (r0 / t.m) * nk * tile_blocks + ((r0 % t.m) / 16) * tkb * 16 + r0 % 16;
+    for (int64_t kk = 0; kk < nk; kk++) {
+        const int64_t first_cb = kk * tkb;
+        for (int64_t sx = 0; sx < tkb; sx++) {
+            uint8_t * dst = out + (base + kk * tile_blocks + sx * 16) * BFP16_BLOCK_BYTES;
+            const int64_t c = (first_cb + sx) * 8;
+            for (int64_t i = 0; i < count; i++)
+                bfp16_encode_block(rows[i] + c, dst + i * BFP16_BLOCK_BYTES);
+        }
+    }
+}
+
 void bfp16_decode_block(const uint8_t * in, float * x) {
 #ifdef __AVX2__
     // mantissa * 2^(exponent - 133), with the scale built from its bits when
@@ -165,6 +241,19 @@ void bfp16_pack_b(const float * w, int64_t N, int64_t K, const bfp16_tiling & t,
 void bfp16_pack_b_into(const float * w, int64_t N, int64_t K, const bfp16_tiling & t, uint8_t * out,
                        const bfp16_runner & run) {
     walk_b_run(N, K, t, run, [&](int64_t r, int64_t c, size_t off) { bfp16_encode_block(w + r * K + c * 8, out + off); });
+}
+
+void bfp16_pack_b_rows_into(int64_t N, int64_t K, const bfp16_tiling & t, uint8_t * out,
+                            const bfp16_runner & run, const bfp16_row_loader & load_row) {
+    run(N, [&](int64_t r0, int64_t r1) {
+        std::vector<float> row((size_t) K);
+        for (int64_t r = r0; r < r1; r++) {
+            load_row(r, row.data());
+            bfp16_b_row(r, N, K, t, [&](int64_t cb, size_t off) {
+                bfp16_encode_block(row.data() + cb * 8, out + off);
+            });
+        }
+    });
 }
 
 // Inside a tile, walk_tile's order: row pair (16 rows) by row pair, block

@@ -40,11 +40,14 @@ int main(int argc, char ** argv) {
     }
     // sizes the design can't take
     for (auto [M, K, N] : { std::array<long long, 3>{ 256, 2048, 1024 }, { 512, 2048, 896 }, { 512, 96, 1024 },
-                            { 512, 64, 1024 }, { 512, 2048, 33280 } }) {
+                            { 512, 64, 1024 }, { 512, 2048, 35328 } }) {
         const bool ok = !bfp16_insts_fits(M, K, N) && bfp16_insts(M, K, N, 0).empty();
         printf("%s %lldx%lldx%lld refused\n", ok ? "PASS" : "FAIL", M, K, N);
         failures += !ok;
     }
+    const bool wide = bfp16_insts_fits(512, 128, 34816) && !bfp16_insts(512, 128, 34816, 2).empty();
+    printf("%s 512x128x34816 fused shape accepted\n", wide ? "PASS" : "FAIL");
+    failures += !wide;
     if (n == 0) {
         printf("no reference streams in %s\n", dir.string().c_str());
         return 2;

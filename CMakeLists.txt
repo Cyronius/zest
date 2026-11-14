@@ -151,6 +151,30 @@ if(GGML_XDNA_NPU)
     add_custom_command(TARGET npu-ceiling-repro POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:npu-ceiling-repro> "${GGML_DIST}"
     )
+    if(NOT WIN32)
+        add_executable(test-npu-wide
+            tests/test-npu-wide.cpp
+            src/xdna-platform.cpp
+            src/npu/npu_bfp16.cpp
+            src/npu/bfp16_pack.cpp
+            src/npu/bfp16_insts.cpp
+            src/npu/xrt_load.cpp
+        )
+        target_include_directories(test-npu-wide PRIVATE src src/npu vendor/xrt-shim)
+        target_compile_options(test-npu-wide PRIVATE ${AVX2})
+        target_link_libraries(test-npu-wide PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+        add_dependencies(test-npu-wide ggml-zest-xrt)
+
+        # One real GGUF projection split by output columns across Vulkan and
+        # XDNA. Diagnostic benchmark only; it does not change inference.
+        add_executable(bench-hybrid-projection tools/bench-hybrid-projection.cpp)
+        target_include_directories(bench-hybrid-projection PRIVATE "${GGML_HEADERS}/include")
+        target_compile_definitions(bench-hybrid-projection PRIVATE GGML_SHARED GGML_BACKEND_SHARED)
+        target_link_libraries(bench-hybrid-projection PRIVATE ${GGML_LIBS} Threads::Threads)
+        add_custom_command(TARGET bench-hybrid-projection POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:bench-hybrid-projection> "${GGML_DIST}"
+        )
+    endif()
 endif()
 
 # The launcher: `zest llama-server ...` with nothing to set (XDNA-LAUNCHER).
@@ -203,6 +227,10 @@ file(TO_NATIVE_PATH "${GGML_DIST}/${XDNA_LIB}" XDNA_PATH)
 set(XDNA_ENV "GGML_BACKEND_PATH=${XDNA_PATH}" "GGML_XDNA_KERNELS=")
 add_test(NAME insts-gen COMMAND test-insts-gen)
 add_test(NAME bfp16-pack COMMAND test-bfp16-pack)
+if(TARGET test-npu-wide)
+    add_test(NAME npu-wide COMMAND test-npu-wide "${XDNA_XCLBIN}")
+    set_tests_properties(npu-wide PROPERTIES LABELS npu)
+endif()
 add_test(NAME safe-start COMMAND "${GGML_DIST}/test-safe-start${EXE}")
 add_test(NAME safe-start-no-driver COMMAND "${GGML_DIST}/test-safe-start${EXE}" --no-driver)
 foreach(t dispatch-gate mul-mat)

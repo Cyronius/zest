@@ -120,6 +120,14 @@ int main() {
             bfp16_a_row(r, s.K, t, [&](int64_t cb, size_t off) { bfp16_encode_block(x.data() + (size_t) r * s.K + cb * 8, placed.data() + off); });
         snprintf(what, sizeof(what), "activations %dx%d: blocks encoded at bfp16_a_row's offsets give the same bytes", s.M, s.K);
         check(placed == want, what);
+        std::fill(placed.begin(), placed.end(), 0);
+        for (int r0 = 0; r0 < s.M; r0 += 8) {
+            const float * rows[8];
+            for (int i = 0; i < 8; i++) rows[i] = x.data() + (size_t) (r0 + i) * s.K;
+            bfp16_pack_a_tile_rows(rows, r0, 8, s.K, t, placed.data());
+        }
+        snprintf(what, sizeof(what), "activations %dx%d: eight-row contiguous writes give the same bytes", s.M, s.K);
+        check(placed == want, what);
 
         std::vector<float> back((size_t) s.M * s.K);
         bfp16_unpack_a(got.data(), s.M, s.K, t, back.data());
@@ -144,6 +152,15 @@ int main() {
                  s.n, s.k, s.cols);
         check(got == want, what);
 
+        std::vector<uint8_t> by_rows(got.size());
+        bfp16_pack_b_rows_into(s.N, s.K, t, by_rows.data(),
+                               [](int64_t n, const std::function<void(int64_t, int64_t)> & fn) { fn(0, n); },
+                               [&](int64_t r, float * row) {
+                                   memcpy(row, w.data() + (size_t) r * s.K, (size_t) s.K * sizeof(float));
+                               });
+        snprintf(what, sizeof(what), "weights %dx%d: row-wise packing matches the full-weight layout", s.N, s.K);
+        check(by_rows == want, what);
+
         std::vector<uint8_t> placed(got.size());
         for (int r = 0; r < s.N; r++)
             for (int cb = 0; cb < s.K / 8; cb++)
@@ -162,6 +179,28 @@ int main() {
         for (size_t b = 0; b < dec.size() / 8; b++) bfp16_decode_block(rows.data() + b * 9, dec.data() + b * 8);
         snprintf(what, sizeof(what), "weights %dx%d: unpack gives back the decoded values", s.N, s.K);
         check(memcmp(back.data(), dec.data(), back.size() * 4) == 0, what);
+    }
+
+    // The direct loader's row selection for a fused gate/up weight must
+    // preserve the kernel's eight-gate, eight-up order.
+    {
+        constexpr int F = 512, K = 256;
+        const bfp16_tiling t;
+        const std::vector<float> gate = make_data((size_t) F * K, 91);
+        const std::vector<float> up = make_data((size_t) F * K, 92);
+        std::vector<float> interleaved((size_t) 2 * F * K);
+        bfp16_interleave_gate_up(gate.data(), up.data(), F, K, interleaved.data());
+        std::vector<uint8_t> want;
+        bfp16_pack_b(interleaved.data(), 2 * F, K, t, want, 4);
+        std::vector<uint8_t> got(want.size());
+        bfp16_pack_b_rows_into(2 * F, K, t, got.data(),
+                               [](int64_t n, const std::function<void(int64_t, int64_t)> & fn) { fn(0, n); },
+                               [&](int64_t r, float * row) {
+                                   const int64_t source_row = (r / 16) * 8 + r % 8;
+                                   const float * src = (r % 16 < 8 ? gate.data() : up.data()) + source_row * K;
+                                   memcpy(row, src, K * sizeof(float));
+                               });
+        check(got == want, "fused gate/up row-wise packing preserves the eight-row interleave");
     }
 
     // The saturation case on its own: a block whose maximum rounds up to +128.

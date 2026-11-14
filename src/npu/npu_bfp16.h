@@ -32,6 +32,10 @@ public:
     // into its own device buffer. Returns its handle, or -1.
     int add_weights(const std::vector<uint8_t> & packed, std::string & err);
 
+    // Allocate a weight operand for direct packing through buffer_map.
+    // The caller must fill every byte and buffer_sync it before use.
+    int add_uninitialized_weights(size_t bytes, std::string & err);
+
     // A B operand the host rewrites in place (attention's keys and values):
     // `bytes` of zeros, filled through buffer_map and synced to the device a
     // range at a time. Its handle goes where add_weights' do.

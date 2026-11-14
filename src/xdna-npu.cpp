@@ -336,32 +336,41 @@ int xdna_npu::shape(int64_t M, int64_t K, int64_t N, int mode, std::string & err
     return h;
 }
 
-void xdna_npu::unpack(const void * raw, ggml_type type, int64_t N, int64_t K, float * dst) {
-    const size_t row_bytes = ggml_row_size(type, K);
-    pool_->parallel_for(N, [&](int64_t r0, int64_t r1) {
-        for (int64_t r = r0; r < r1; r++) {
-            const uint8_t * src = (const uint8_t *) raw + r * row_bytes;
-            if (type == GGML_TYPE_F32) memcpy(dst + r * K, src, (size_t) K * sizeof(float));
-            else ggml_get_type_traits(type)->to_float(src, dst + r * K, K);
-        }
-    });
+void xdna_npu::unpack_row(const void * raw, ggml_type type, int64_t r, int64_t K, float * dst) {
+    const uint8_t * src = (const uint8_t *) raw + r * ggml_row_size(type, K);
+    if (type == GGML_TYPE_F32) memcpy(dst, src, (size_t) K * sizeof(float));
+    else ggml_get_type_traits(type)->to_float(src, dst, K);
 }
 
-// f: N x K float32 rows (N padded), encoded and laid out for the kernel;
-// n_out of each output row's values are real.
-bool xdna_npu::add_packed(const wkey & key, std::vector<float> & f, int64_t N, int64_t n_out, int mode, std::string & err) {
+// Decode one GGUF row at a time into the kernel's B layout. The NPU buffer
+// itself is the destination, so no full float32 or packed host copy is kept.
+bool xdna_npu::add_packed(const wkey & key, int64_t N, int64_t n_out, int mode,
+                          const bfp16_row_loader & load_row, std::string & err) {
     weight w;
     w.K = key.K;
     w.N = N;
     w.mode = mode;
     w.N_out = n_out;
+    auto phase = clk::now();
     w.shape_small = shape(SMALL, key.K, N, mode, err);
     w.shape_big = shape(BIG, key.K, N, mode, err);
+    times_.weight_shape_ms += ms_since(phase);
     if (w.shape_small < 0 || w.shape_big < 0) return false;
-    std::vector<uint8_t> packed;
-    bfp16_pack_b(f.data(), N, key.K, TILE, packed, pool_->size());
-    w.handle = npu_->add_weights(packed, err);
+    const size_t bytes = (size_t) (N * key.K / 8) * BFP16_BLOCK_BYTES;
+    phase = clk::now();
+    w.handle = npu_->add_uninitialized_weights(bytes, err);
     if (w.handle < 0) return false;
+    uint8_t * packed = npu_->buffer_map(w.handle);
+    times_.weight_alloc_ms += ms_since(phase);
+    if (!packed) { err = "cannot map the weight buffer"; return false; }
+    phase = clk::now();
+    bfp16_pack_b_rows_into(N, key.K, TILE, packed,
+                           [&](int64_t n, const std::function<void(int64_t, int64_t)> & fn) { pool_->parallel_for(n, fn); },
+                           load_row);
+    times_.weight_encode_ms += ms_since(phase);
+    phase = clk::now();
+    if (!npu_->buffer_sync(w.handle, 0, bytes, err)) return false;
+    times_.weight_upload_ms += ms_since(phase);
     weights_[key] = w;
     return true;
 }
@@ -369,10 +378,12 @@ bool xdna_npu::add_packed(const wkey & key, std::vector<float> & f, int64_t N, i
 bool xdna_npu::add_weight(const wkey & key, const void * raw, std::string & err) {
     const clk::time_point t0 = clk::now();
     const int64_t N = pad_n(key.N);
-    std::vector<float> f((size_t) (N * key.K), 0.0f);
-    unpack(raw, (ggml_type) key.type, key.N, key.K, f.data());
     const int mode = out16_enabled() ? 1 : 0;
-    const bool ok = add_packed(key, f, N, key.N, mode, err);
+    const auto load_row = [&](int64_t r, float * row) {
+        if (r < key.N) unpack_row(raw, (ggml_type) key.type, r, key.K, row);
+        else std::fill_n(row, key.K, 0.0f);
+    };
+    const bool ok = add_packed(key, N, key.N, mode, load_row, err);
     times_.pack_ms += ms_since(t0);
     return ok;
 }
@@ -380,11 +391,12 @@ bool xdna_npu::add_weight(const wkey & key, const void * raw, std::string & err)
 bool xdna_npu::add_fused(const wkey & gate, const void * gate_raw, const void * up_raw, std::string & err) {
     const clk::time_point t0 = clk::now();
     const int64_t F = gate.N, K = gate.K, Fp = pad_f(F);
-    std::vector<float> g((size_t) (Fp * K), 0.0f), u((size_t) (Fp * K), 0.0f), f((size_t) (2 * Fp * K));
-    unpack(gate_raw, (ggml_type) gate.type, F, K, g.data());
-    unpack(up_raw, (ggml_type) gate.type, F, K, u.data());
-    bfp16_interleave_gate_up(g.data(), u.data(), Fp, K, f.data());
-    const bool ok = add_packed(fused_key(gate), f, 2 * Fp, F, 2, err);
+    const auto load_row = [&](int64_t r, float * row) {
+        const int64_t source_row = (r / 16) * 8 + r % 8;
+        if (source_row >= F) { std::fill_n(row, K, 0.0f); return; }
+        unpack_row(r % 16 < 8 ? gate_raw : up_raw, (ggml_type) gate.type, source_row, K, row);
+    };
+    const bool ok = add_packed(fused_key(gate), 2 * Fp, F, 2, load_row, err);
     times_.pack_ms += ms_since(t0);
     return ok;
 }
@@ -512,6 +524,11 @@ void xdna_npu::encode_row(int stream, int64_t r, const float * row) {
     const flight & f = flights_[stream];
     uint8_t * A = f.batch->a(0);
     bfp16_a_row(r, f.w[0]->K, TILE, [&](int64_t cb, size_t off) { bfp16_encode_block(row + cb * 8, A + off); });
+}
+
+void xdna_npu::encode_tile(int stream, int64_t r0, int64_t count, const float * const * rows) {
+    const flight & f = flights_[stream];
+    bfp16_pack_a_tile_rows(rows, r0, count, f.w[0]->K, TILE, f.batch->a(0));
 }
 
 bool xdna_npu::submit(int stream, std::string & err) {

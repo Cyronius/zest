@@ -193,7 +193,7 @@ struct xdna_context {
     size_t gpu_in_size = 0;
 
     // Each claimed weight's raw bytes, read once, for matmuls run on the
-    // host (the NPU keeps its own 8-bit copy). Only tensors in buffers
+    // host (the NPU keeps its own BFP16 copy). Only tensors in buffers
     // llama.cpp marks as weights are kept (their contents never change after loading),
     // keyed on where they live and what they are rather than on the tensor
     // struct, whose address can be reused.
@@ -245,9 +245,9 @@ struct xdna_context {
     }
 
     // Weight copies built while the model loads: graph_optimize lists the
-    // copies each piece will use as llama.cpp plans it, and a thread of their
-    // own builds them. A piece waits for that thread before it runs, so
-    // nothing else uses the NPU or our Vulkan backend while it builds.
+    // copies each piece will use as llama.cpp plans it. The load callback
+    // waits for the builder before returning, so the first request does not
+    // pay for the copies.
     struct build_job { const ggml_tensor * w, * up; };  // up: the up weight of a fused gate/up
     std::thread builder;
     std::mutex build_mu;
@@ -669,7 +669,7 @@ static bool xdna_mul_mat(xdna_context & ctx, ggml_tensor * node) {
 
 #ifdef XDNA_HAVE_NPU
     // On the NPU, for weights llama.cpp loaded (a weight buffer) in a built
-    // shape: its 8-bit copy is made the first time it's used.
+    // shape: its BFP16 copy is made the first time it's used.
     xdna_npu * npu = ctx.get_npu();
     if (npu && src0->buffer && ggml_backend_buffer_get_usage(src0->buffer) == GGML_BACKEND_BUFFER_USAGE_WEIGHTS &&
         xdna_npu_has_shape(src0->ne[0], src0->ne[1])) {
@@ -780,11 +780,17 @@ static ggml_status ggml_backend_xdna_graph_compute(ggml_backend_t backend, ggml_
         ~timer() {
             c.compute_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
             c.pieces++;
-            if (!xdna_trace() || c.matmuls < 196) return;
+            // A single-projection benchmark needs the same breakdown as a
+            // full prompt, without waiting for 196 accumulated matmuls.
+            if (!xdna_trace() || (c.matmuls < 196 && !xdna_env("GGML_XDNA_TRACE_EVERY"))) return;
 #ifdef XDNA_HAVE_NPU
             const xdna_npu::times n = c.npu ? c.npu->take_times() : xdna_npu::times{};
 #else
-            const struct { double encode_ms = 0, npu_ms = 0, decode_ms = 0, pack_ms = 0; int calls = 0; } n;
+            const struct {
+                double encode_ms = 0, npu_ms = 0, decode_ms = 0, pack_ms = 0;
+                double weight_shape_ms = 0, weight_alloc_ms = 0, weight_encode_ms = 0, weight_upload_ms = 0;
+                int calls = 0;
+            } n;
 #endif
             fprintf(stderr,
                     "xdna times, %lld matmuls in %lld pieces: all %.1f ms | read inputs %.1f, encode %.1f, NPU %.1f "
@@ -796,9 +802,18 @@ static ggml_status ggml_backend_xdna_graph_compute(ggml_backend_t backend, ggml_
             // passes, so there "encode" is only padding and copies, and
             // "decode" is 0
             fprintf(stderr, "xdna host passes: %.1f ms in %lld\n", xdna_pass_ms, (long long) xdna_passes);
+            fprintf(stderr, "xdna host pass worker CPU: decode %.1f, encode %.1f ms",
+                    xdna_decode_cpu_ns.exchange(0) / 1e6, xdna_encode_cpu_ns.exchange(0) / 1e6);
+            for (int op = 0; op < GGML_OP_COUNT; op++) {
+                const double ms = xdna_op_cpu_ns[op].exchange(0) / 1e6;
+                if (ms >= 1.0) fprintf(stderr, ", %s %.1f", ggml_op_name((ggml_op) op), ms);
+            }
+            fprintf(stderr, "\n");
             fprintf(stderr, "xdna weight copies: %lld built at load, %lld inside pieces; %.1f ms waiting for those "
                             "built at load\n",
                     (long long) c.built_at_load, (long long) c.late_copies, c.build_wait_ms);
+            fprintf(stderr, "xdna weight preparation: shapes %.1f, allocate %.1f, dequant+encode %.1f, sync %.1f ms\n",
+                    n.weight_shape_ms, n.weight_alloc_ms, n.weight_encode_ms, n.weight_upload_ms);
             if (c.gpu_pieces) fprintf(stderr, "xdna: %lld pieces on the GPU after the NPU failed\n", (long long) c.gpu_pieces);
             xdna_pass_ms = 0;
             xdna_passes = 0;
@@ -927,9 +942,8 @@ static ggml_status ggml_backend_xdna_graph_compute(ggml_backend_t backend, ggml_
 
 // llama.cpp shows each backend the pieces it plans for it: at load, when it
 // plans the first prompt, and again whenever a prompt's pieces change. The
-// first time a piece's weights appear, their NPU copies start building on a
-// thread of their own (xdna_context::queue_copies), so the first prompt
-// needn't wait for them. GGML_XDNA_COPY_AT_LOAD=0 leaves them to the first
+// first time a piece's weights appear, their NPU copies are built before the
+// load callback returns. GGML_XDNA_COPY_AT_LOAD=0 leaves them to the first
 // prompt.
 static void ggml_backend_xdna_graph_optimize(ggml_backend_t backend, ggml_cgraph * cgraph,
                                              ggml_backend_graph_optimize_params * params) {
@@ -958,6 +972,7 @@ static void ggml_backend_xdna_graph_optimize(ggml_backend_t backend, ggml_cgraph
     std::vector<xdna_context::build_job> jobs;
     for (const auto & w : ws) jobs.push_back({ w.first, w.second });
     ctx.queue_copies(jobs);
+    ctx.finish_copies();
 #endif
     GGML_UNUSED(backend);
     GGML_UNUSED(cgraph);

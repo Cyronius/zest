@@ -96,6 +96,20 @@ int npu_bfp16::add_weights(const std::vector<uint8_t> & packed, std::string & er
     return (int) weights_.size() - 1;
 }
 
+int npu_bfp16::add_uninitialized_weights(size_t bytes, std::string & err) {
+    wbuf w;
+    w.bytes = bytes;
+    w.bo = xrtsh_bo_create(dev_, bytes);
+    if (!w.bo) { err = shim_error("cannot allocate a weight buffer"); return -1; }
+    if (!xrtsh_bo_map(w.bo)) {
+        err = shim_error("cannot map a weight buffer");
+        xrtsh_bo_free(w.bo);
+        return -1;
+    }
+    weights_.push_back(w);
+    return (int) weights_.size() - 1;
+}
+
 int npu_bfp16::add_buffer(size_t bytes, std::string & err) {
     wbuf w;
     w.bytes = bytes;

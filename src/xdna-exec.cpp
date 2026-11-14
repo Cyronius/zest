@@ -81,6 +81,9 @@ void rope_yarn(float theta_extrap, float freq_scale, const float corr[2], int64_
 
 double xdna_pass_ms = 0;
 int64_t xdna_passes = 0;
+std::atomic<int64_t> xdna_decode_cpu_ns{0};
+std::atomic<int64_t> xdna_encode_cpu_ns{0};
+std::atomic<int64_t> xdna_op_cpu_ns[GGML_OP_COUNT]{};
 
 const ggml_tensor * xdna_exec_param(const ggml_tensor * op) {
     switch (op->op) {
@@ -370,18 +373,41 @@ struct piece {
         const group * next = seg.next >= 0 ? &groups[seg.next] : nullptr;
         const int64_t tiles = (t1 - t0 + TILE_ROWS - 1) / TILE_ROWS;
         std::atomic<bool> bad{ false };
+        static const bool trace = xdna_env("GGML_XDNA_TRACE") != nullptr;
         pool.parallel_for(tiles, [&](int64_t i0, int64_t i1) {
             thread_local std::vector<float> scratch;
             if (scratch.size() < scratch_floats) scratch.resize(scratch_floats);
+            int64_t decode_ns = 0, encode_ns = 0;
+            int64_t op_ns[GGML_OP_COUNT] = {};
+            auto elapsed_ns = [](std::chrono::steady_clock::time_point from) {
+                return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - from).count();
+            };
             for (int64_t i = i0; i < i1; i++) {
                 const tile tl = { t0 + i * TILE_ROWS, std::min(t1, t0 + (i + 1) * TILE_ROWS), scratch.data() };
+                auto phase = trace ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
                 if (done && npu)
                     for (size_t k = 0; k < done->outs.size(); k++)
                         for (int64_t r = tl.r0; r < tl.r1; r++)
                             if (!npu->decode_row(si, (int) k, r - t0, row(done->outs[k], r, tl))) bad = true;
-                for (const ggml_tensor * n : seg.ops) run_rows(n, tl);
-                if (next && npu)
-                    for (int64_t r = tl.r0; r < tl.r1; r++) npu->encode_row(si, r - t0, row(next->x, r, tl));
+                if (trace) decode_ns += elapsed_ns(phase);
+                for (const ggml_tensor * n : seg.ops) {
+                    phase = trace ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+                    run_rows(n, tl);
+                    if (trace) op_ns[n->op] += elapsed_ns(phase);
+                }
+                phase = trace ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+                if (next && npu) {
+                    const float * rows[TILE_ROWS];
+                    for (int64_t r = tl.r0; r < tl.r1; r++) rows[r - tl.r0] = row(next->x, r, tl);
+                    npu->encode_tile(si, tl.r0 - t0, tl.r1 - tl.r0, rows);
+                }
+                if (trace) encode_ns += elapsed_ns(phase);
+            }
+            if (trace) {
+                xdna_decode_cpu_ns.fetch_add(decode_ns, std::memory_order_relaxed);
+                xdna_encode_cpu_ns.fetch_add(encode_ns, std::memory_order_relaxed);
+                for (int op = 0; op < GGML_OP_COUNT; op++)
+                    if (op_ns[op]) xdna_op_cpu_ns[op].fetch_add(op_ns[op], std::memory_order_relaxed);
             }
         });
         return !bad;

@@ -62,6 +62,13 @@ void bfp16_pack_a_into(const float * x, int64_t M, int64_t K, const bfp16_tiling
 void bfp16_pack_b_into(const float * w, int64_t N, int64_t K, const bfp16_tiling & t, uint8_t * out,
                        const bfp16_runner & run);
 
+// Pack one dequantized row at a time. The loader fills K floats for row r;
+// it can decode a quantized GGUF row or supply zeros for padding. Keeping
+// only one row per worker avoids a full float32 copy of the weight.
+using bfp16_row_loader = std::function<void(int64_t r, float * row)>;
+void bfp16_pack_b_rows_into(int64_t N, int64_t K, const bfp16_tiling & t, uint8_t * out,
+                            const bfp16_runner & run, const bfp16_row_loader & load_row);
+
 // Where the block holding columns [8*cb, 8*cb + 8) of row r goes: its byte
 // offset in an A operand of K columns, or a B operand of N rows and K
 // columns. For producers that encode blocks straight into place, in whatever
@@ -82,6 +89,13 @@ template <typename F>
 inline void bfp16_a_row(int64_t r, int64_t K, const bfp16_tiling & t, F && fn) {
     bfp16_row_blocks(r / t.m, r % t.m, K, t.m, t, fn);
 }
+
+// Encode up to eight neighboring activation rows together. Within each
+// K/8 block their BFP records are adjacent in the NPU's A layout, so this
+// writes one contiguous run instead of independent strided row streams.
+// r0 is a multiple of eight; count <= 8 and cannot cross a 16-row group.
+void bfp16_pack_a_tile_rows(const float * const * rows, int64_t r0, int64_t count,
+                           int64_t K, const bfp16_tiling & t, uint8_t * out);
 template <typename F>
 inline void bfp16_b_row(int64_t r, int64_t N, int64_t K, const bfp16_tiling & t, F && fn) {
     const int64_t g = r / t.n, per_col = N / t.n / t.cols;

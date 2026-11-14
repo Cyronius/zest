@@ -70,7 +70,9 @@ struct stream {
 } // namespace
 
 bool bfp16_insts_fits(int64_t M, int64_t K, int64_t N) {
-    return M > 0 && M % (TM * ROWS) == 0 && N > 0 && N % (TN * COLS) == 0 && N / (TN * COLS) <= 64 && K % TK == 0 &&
+    // 68 output tile groups cover Qwen3.8-27B's 17,408-wide gate and up
+    // weights in one fused 34,816-wide kernel invocation.
+    return M > 0 && M % (TM * ROWS) == 0 && N > 0 && N % (TN * COLS) == 0 && N / (TN * COLS) <= 68 && K % TK == 0 &&
            K >= 2 * TK;
 }
 
