@@ -21,7 +21,8 @@ llama.cpp use, building, architecture, tuning, and standalone measurements.
   by what the NPU does, not by the chip's name (see
   [Troubleshooting](#troubleshooting) if it turns itself off). Krackan Point
   (Ryzen AI 7 350, Ryzen AI 5 340) has not been tested. On Strix Halo,
-  the GPU alone is currently faster on the tested Qwen3.8-27B prompt.
+  the GPU alone reads prompts faster, so `zest` uses the GPU there (see
+  [Strix Halo](#strix-halo)).
 - The AMD NPU driver. Tested with 32.0.20102.3930.
 - A GPU driver with Vulkan. Tested with Radeon driver 32.0.31041.1004.
 - llama.cpp release **b10944**, Vulkan build
@@ -180,10 +181,11 @@ cd zest-<version>-llama-b10944-ubuntu-x64
 ./npu llama-server -m model.gguf
 ```
 
-It's llama.cpp's own Linux Vulkan release, unmodified, with the add-on
+It's llama.cpp's own Linux Vulkan release with the add-on
 (`libggml-zest.so`, which reaches the NPU driver through
-`libggml-zest-xrt.so` next to it), the NPU kernel, and both `zest` and `npu`. Without the
-launcher:
+`libggml-zest-xrt.so` next to it), the NPU kernel, and both `zest` and `npu`.
+A package made after `tools/build-vulkan.sh` also swaps in a faster Vulkan
+backend; see [Strix Halo](#strix-halo). Without the launcher:
 
 ```
 GGML_BACKEND_PATH=$PWD/libggml-zest.so ./llama-server -m model.gguf -dev XDNA0,Vulkan0 -ts 0,1
@@ -199,6 +201,84 @@ work as they would for the program alone.
 **Not known yet on Linux:** whether the NPU's memory ceiling (about 26 GB
 on Windows, see Limitations) is the same there. The default 20 GB limit
 applies on both. The speed and accuracy tables below are from Windows.
+
+## Strix Halo
+
+Strix Halo's Radeon 8060S reads prompts faster on its own than with the NPU's
+help, so there `zest` leaves the NPU out. On a Radeon 8060S or 8050S with
+Mesa's Vulkan driver (Linux) it adds `-dev Vulkan0`, plus `-ub 256 -b 2048`
+for `llama-server`, `llama-cli` and `llama-completion`:
+
+```
+zest: prompts on the GPU, which is faster than the NPU on Strix Halo (added -dev Vulkan0 -ub 256 -b 2048)
+```
+
+Anything you set yourself is kept, so `-dev XDNA0,Vulkan0` still uses the
+NPU. On Windows, where we haven't measured Strix Halo, `zest` keeps the usual
+path. 256-token pieces were the fastest we measured, up to 8,192-token prompts,
+most likely because each piece's activations then fit in the GPU's 32 MB
+cache.
+
+**A faster Vulkan backend.** `tools/build-vulkan.sh` builds llama.cpp
+b10944's `libggml-vulkan.so` with
+[a patch](../patches/llama.cpp-b10944/vulkan-rdna3-prefill.patch); copy it
+over the one next to `llama-server` (`tools/package.sh` puts it in the
+package when it's built). The patch changes five things:
+
+- Weight multiplies on larger RDNA3 GPUs with Mesa's driver: a wider tile, in which some
+  threads load and unpack the next tile of quantized weights while the others
+  multiply, and less padding in shared memory. On RDNA3 the matrix
+  instructions run on the same vector unit as the unpacking, so spreading
+  each unpacked tile over more columns saves time. The usual 128 x 128 tile
+  gets loading threads too, for weight types whose lookup tables don't fit
+  the wide one (IQ2_S: 1.2x).
+- Unpacking quantized weights, on any GPU: IQ3_S, IQ3_XXS, IQ4_XS, Q4_K and
+  Q5_K weights are unpacked 8 at a time instead of 4, Q3_K and Q6_K 4 at a
+  time instead of 2, so each group's scale, signs and position are worked out
+  once. The values are the same; on the 8060S the multiplies ran 3-14%
+  faster for most of these types.
+- `llama-server`'s context checkpoints, which save a hybrid model's
+  recurrent state (150 MiB for Qwen3.8-27B) twice near the end of each
+  prompt: on integrated GPUs the GPU copies them into cached memory, instead
+  of the CPU reading uncached GPU memory at about 130 MB/s. llama.cpp's
+  current code has the same fix for AMD GPUs.
+- The step that joins a Gated DeltaNet layer's convolution state to its
+  input runs as a tiled transpose.
+- The shared-memory check counts what the tile really uses, so weight types
+  with large lookup tables (IQ2_S, IQ1) keep the old tile.
+
+The weight-multiply changes apply only to RDNA3 GPUs with 32 or more
+compute units on Mesa's driver (not AMD's Windows driver, nor the 12- and
+16-CU Radeon 780M and 890M), and we measured only the 40-CU Radeon 8060S:
+other such GPUs run them untested. The other changes apply on any GPU.
+
+Qwen3.8-27B UD-IQ3_S, the 2,769-token prompt, `llama-server` with
+Lemonade's arguments, on a quiet machine, two alternating rounds
+([raw](results/halo-gpu-prefill-2026-11-14.json)):
+
+| Vulkan backend | pieces (`-ub`) | prompt tokens/s, median |
+|---|---|---|
+| b10944 release | 2048 | 322 |
+| b10944 + patch | 2048 | 425 (1.32x) |
+| b10944 + patch | 256 | **450 (1.39x)** |
+
+The final build, with loading threads on the 128 x 128 tile and the wider
+unpacking as well, read it at 486-498 tokens/s in later quiet sittings
+(1.5x the release), and an 8,192-token prompt at 480.
+
+Without the patch, `-ub 256` alone read it at 346 tokens/s against 321 at
+2048 in another quiet sitting (1.08x). Lemonade's ROCm backend
+(`llamacpp_backend: rocm`, its gfx1151 build b1376) needs no patch either and
+read it at 385 at `-ub 256`, against 454 for the patched Vulkan backend in the
+same sitting. Zest's NPU add-on works only with the Vulkan backend.
+
+The reply is the same text in every run, perplexity on the prompt matches
+within its error (1.873 against 1.875), all 19,943 of llama.cpp's Vulkan
+backend tests pass, and replies are written as fast as before (17.0 against
+17.1 tokens/s). With `llama-bench`, which saves no checkpoints, the patch
+reads the same prompt at 458 tokens/s against the release's best 354, and an
+8,192-token prompt at 449 against 330. llama.cpp's own current code (3549c27,
+2026-11-14) read it at 382.
 
 ## The NPU's power mode
 
@@ -459,51 +539,18 @@ contexts of 32,768 tokens, and two models served at once by its router.
   `GGML_XDNA_MAX_COPY_GB`) sets the limit. This is load-time dequantization;
   the shipped NPU kernel still reads BFP16 weight copies at execution.
   Decoding raw GGUF weights on the NPU would need a new kernel.
-- **Strix Halo Qwen3.8-27B prefill:** in a clean Linux measurement of the
-  2,769-token UD-IQ3_S prompt, the GPU alone processed 278 tokens/s and
-  NPU assist processed 231 tokens/s after direct weight packing and fused
-  gate/up support. Restricting the NPU to the largest feed-forward matrices
-  reached 241 tokens/s; only gate/up reached 248 tokens/s, and only the down
-  projection reached 245 tokens/s. Attention-only fell to 231 tokens/s.
-  Matmul-only claiming fell to 194 tokens/s. Forcing
-  the same claimed pieces to run on Vulkan reached 262 tokens/s, which
-  isolates the cost of graph partitioning from NPU execution. Increasing
-  the NPU copy limit to hold all layers did not help. An experimental
-  concurrent token-row split reached only 231 tokens/s and was removed.
-  Sharing the NPU's activation buffer between grouped projections made no
-  measurable difference in a controlled run (255.42 versus 255.43 tokens/s)
-  and was removed.
-  Under that later clock regime, the paired GPU control was 299.60 tokens/s.
-  The measurements are
-  in [the Strix Halo result](results/halo-zest-qwen38-27b-2026-11-13.json).
-  A trace of one warm NPU request attributed about 1.2-1.3 s to NPU
-  submissions and waits and 1.3-1.5 s to host passes per roughly 200
-  matmuls. The host passes decode NPU outputs, run small graph operations,
-  and encode the next activation. A GPU/NPU output-column split, like the
-  one in yet-another-halo-engine, would let both devices work on a large
-  projection at once. Zest currently gives whole projections to one device,
-  so its earlier token-row split did not solve this staging cost. An isolated
-  concurrent output-column probe on the real `blk.2.ffn_down.weight` matrix
-  also lost through Zest's current host-staged backends: the full Vulkan
-  projection took about 8.4 ms for 1,024 rows, while three GPU/NPU splits
-  took 13.0, 13.0, and 14.8 ms. The combined result was within 1.4%
-  normalized RMS error of the full Vulkan output. Concurrent execution
-  alone did not remove host activation packing and device contention.
-  The GGUF is mixed quantization: IQ3_S holds 8.65 billion of its 27.32
-  billion tensor values (32%); IQ4_XS and IQ3_XXS each hold about 4.9
-  billion. An execution-time dequantization path must handle several weight
-  formats to replace the large BFP16 copies across the model. A standalone
-  AIE2P IQ3_S decoder now produces exactly the existing GEMM's BFP16 bytes
-  from 64 real GGUF rows. Its best clean time is 0.559 ms for just
-  64 x 256 weights on one core, so this scalar decoder is a format and
-  correctness prototype; it is not in the inference path. The production
-  decoder needs vectorized lookup and conversion, ideally streamed into
-  GEMM rather than writing a full expanded weight copy.
-  A later clean warm Lemonade pair with eight-row contiguous activation
-  encoding and AVX-512 pair conversion measured 257.86 GPU tokens/s and
-  232.80 NPU-assisted tokens/s. The clock regime differed from the 299.60
-  versus 255.43 control, so those absolute rates do not establish an
-  improvement; the NPU remains slower in both pairs.
+- **Strix Halo uses the GPU alone.** In the Qwen3.8-27B test above, the NPU's
+  help made prompts slower: 194-255 tokens/s against 258-300 for the release
+  GPU alone, across direct weight packing, fused gate/up, larger weight copy
+  limits, NPU work limited to some projections, and GPU/NPU splits of one
+  projection by rows or by columns. A trace put about 1.2-1.3 s in NPU
+  submissions and waits and 1.3-1.5 s in host passes per prompt; forcing the
+  same graph pieces onto Vulkan alone cost 6%. A standalone IQ3_S decoder on
+  one NPU core matched the GGUF bytes exactly but took 0.559 ms per 64 x 256
+  tile, far too slow to unpack weights at run time. Details are in
+  [the NPU result](results/halo-zest-qwen38-27b-2026-11-13.json). With the
+  patched Vulkan backend the GPU is faster still (see
+  [Strix Halo](#strix-halo)).
 - **The NPU holds only so much.** On our 88 GB machine, once the NPU's
   memory passes 26 GB, some of it comes back damaged, with no error. That
   limit is the NPU's own: what the GPU uses doesn't change it. That's why
@@ -651,6 +698,16 @@ if you like):
 It does the same with llama.cpp's Linux Vulkan release. The build needs no
 XRT either: the add-on loads XRT when it starts. The NPU tests run where
 `/dev/accel/accel0` and XRT are present.
+
+`tools/build-vulkan.sh` builds the patched Vulkan backend (see
+[Strix Halo](#strix-halo)) into `build/vulkan/`. It needs a `glslc` with
+cooperative matrices (shaderc 2023 or newer) and the Vulkan and SPIR-V
+headers, and stops if `glslc` can't do cooperative matrices, since the
+backend would then be slower than llama.cpp's own. LunarG's Vulkan SDK has
+all of them: put its `x86_64/bin` first on `PATH` and set `VULKAN_PREFIX` to
+its `x86_64` folder, as the release workflow does with SDK 1.4.335.0. On
+Ubuntu 24.04, `sudo apt install glslc libvulkan-dev spirv-headers` may do
+instead.
 
 **On Linux on the NPU, the full check:** `tools/linux-npu-check.sh` builds,
 runs every test, checks a model's answers and speed against the GPU, and

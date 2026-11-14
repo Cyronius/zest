@@ -27,6 +27,13 @@ for f in libggml-zest.so libggml-zest-xrt.so zest npu; do
     cp "$build/$f" "$stage/"
 done
 cp "$root/kernels/bfp16_gemm/prebuilt/bfp16_gemm.xclbin" "$stage/"
+# llama.cpp's Vulkan backend with patches/llama.cpp-b10944 (tools/build-vulkan.sh), when built: faster prompts on RDNA3
+if [[ -f "$build/vulkan/libggml-vulkan.so" ]]; then
+    cp "$build/vulkan/libggml-vulkan.so" "$stage/libggml-vulkan.so"
+    cp -R "$root/patches" "$stage/patches"
+else
+    echo "package: no $build/vulkan/libggml-vulkan.so (tools/build-vulkan.sh); keeping llama.cpp's own" >&2
+fi
 cp "$root/tools/bench.ps1" "$stage/"
 mkdir -p "$stage/tools" "$stage/docs" "$stage/tests/prompts"
 cp "$root/tools/bench-lemonade.ps1" "$stage/tools/"

@@ -88,9 +88,13 @@ request can take longer while the NPU finishes converting its weight copies.
 
 **Test hardware: Strix Point — Ryzen AI 9 HX PRO 370 / Radeon 890M.**
 This is the smaller laptop GPU, with 16 compute units. High-end Strix Halo's
-Radeon 8060S has 40; it is a much larger GPU platform. We haven't measured
-Zest on Halo, and its faster GPU could change the NPU's relative benefit.
+Radeon 8060S has 40; it is a much larger GPU platform.
 [AMD hardware specifications](https://rocm.docs.amd.com/en/latest/reference/gpu-specs.html).
+
+On Strix Halo under Linux the GPU alone is faster than with the NPU, so
+`zest` uses the GPU there. A patched llama.cpp Vulkan backend read Qwen3.8-27B's
+2,769-token prompt in `llama-server` at 486-498 tokens/s against 322 for the
+b10944 release: see [Strix Halo](docs/technical-guide.md#strix-halo).
 
 | Model / GGUF | Prompt tokens | GPU only (tok/s) | NPU + GPU (tok/s) | Paired speedup (range) | Answer checks, GPU / NPU |
 |---|---:|---:|---:|---:|---|
@@ -133,7 +137,8 @@ default GPU backends. Try your own model before assuming it'll be faster.
 |---|---|
 | Windows 11, Ryzen AI 9 HX PRO 370 / Radeon 890M | Actual Lemonade desktop and API tests |
 | Lemonade / backend | 2026.43.3 / bundled b10944 Vulkan build |
-| Other Ryzen AI hardware, including Strix Halo | Not tested by this project |
+| Strix Halo, Ryzen AI MAX+ 395 / Radeon 8060S, Linux | GPU-only prefill with the patched Vulkan backend measured; NPU assist was slower |
+| Other Ryzen AI hardware | Not tested by this project |
 | Linux | Builds and host tests pass; NPU hardware and Lemonade integration remain unverified |
 | Models | Coverage depends on b10944 and the operations the add-on implements |
 | Memory and output | Converted weight copies need extra RAM; block rounding changes numerical results |

@@ -1,0 +1,723 @@
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+index 0dfa44d..146a46a 100644
+--- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -4163,6 +4163,13 @@ static std::vector<uint32_t> get_fa_spec_constants(const vk_fa_pipeline_state& s
+     };
+ }
+ 
++// Larger RDNA3 GPUs with Mesa's coopmat: pad 2 shared-memory rows and add the wide producer tile.
++// Measured on a 40-CU Radeon 8060S; smaller GPUs such as the 780M and 890M keep the default tiles.
++static bool ggml_vk_rdna3_wide_matmul(const vk_device& device) {
++    return device->vendor_id == VK_VENDOR_ID_AMD && device->coopmat_support && device->architecture == AMD_RDNA3 &&
++           device->driver_id != vk::DriverId::eAmdProprietary && device->shader_core_count >= 32;
++}
++
+ static bool ggml_vk_matmul_shmem_support(const vk_device& device, const std::vector<uint32_t>& warptile, bool mul_mat_id, ggml_type src0_type) {
+ 
+     uint32_t lut_size = 0;
+@@ -4205,13 +4212,15 @@ static bool ggml_vk_matmul_shmem_support(const vk_device& device, const std::vec
+     // Needs to stay aligned with ggml_vk_mul_mm_spec.
+     const bool intel_shmem_stride_pad_zero = device->vendor_id == VK_VENDOR_ID_INTEL && device->coopmat_support &&
+                                               device->driver_id == vk::DriverId::eIntelProprietaryWindows;
+-    const uint32_t bank_conflict_offset = intel_shmem_stride_pad_zero ? 0 : (device->coopmat_support ? 8 : 1);
++    const uint32_t bank_conflict_offset = intel_shmem_stride_pad_zero ? 0 : (device->coopmat_support ? (ggml_vk_rdna3_wide_matmul(device) ? 4 : 8) : 1);
+     const uint32_t type_size = device->fp16 ? sizeof(ggml_fp16_t) : sizeof(float);
+     const uint32_t warps = warptile[0] / warptile[10];
+ 
+-    const uint32_t load_bufs = (warptile[1] + warptile[2]) * (warptile[3] + bank_conflict_offset) * type_size;
++    const uint32_t num_bufs = (warptile.size() > 11 && warptile[11] > 0) ? 2 : 1;
++    const uint32_t load_bufs = (warptile[1] + warptile[2]) * (warptile[3] + bank_conflict_offset) * type_size * num_bufs;
+     const uint32_t mmid_row_ids = mul_mat_id ? (warptile[2] * 2 * sizeof(uint16_t)) : 0;
+-    const uint32_t coopmat_stage = device->coopmat_support ? warptile[7] * warptile[8] / warps * sizeof(float) : 0;
++    const uint32_t producer_warps = warptile.size() > 11 ? warptile[11] / warptile[10] : 0;
++    const uint32_t coopmat_stage = device->coopmat_support ? warptile[7] * warptile[8] * (warps - producer_warps) * sizeof(float) : 0;
+     const uint32_t ballots_sh = mul_mat_id ? (warps * 4 * sizeof(uint32_t)) : 0;
+ 
+     const uint32_t total_size = load_bufs + mmid_row_ids + coopmat_stage + lut_size + ballots_sh;
+@@ -4433,6 +4442,10 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+                           l_warptile_mmqid, m_warptile_mmqid, s_warptile_mmqid,
+                           l_warptile_mmqid_int, m_warptile_mmqid_int, s_warptile_mmqid_int,
+                           l_warptile_mmqid_int_k, m_warptile_mmqid_int_k, s_warptile_mmqid_int_k;
++    // Optional wide quant tile for coopmat1 with producer subgroups (empty: not used)
++    std::vector<uint32_t> xl_warptile_mmq;
++    std::array<uint32_t, 3> xl_mmq_wg_denoms = { 0, 0, 0 };
++    std::vector<uint32_t> l_warptile_mmq_cm1;  // coopmat1-only replacement for l_warptile_mmq (empty: not used)
+     std::array<uint32_t, 3> l_wg_denoms, m_wg_denoms, s_wg_denoms,
+                             l_mmq_wg_denoms, m_mmq_wg_denoms, s_mmq_wg_denoms,
+                             l_mmq_wg_denoms_k, m_mmq_wg_denoms_k, s_mmq_wg_denoms_k,
+@@ -4542,6 +4555,15 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+             l_warptile = { 256, 128, 128, 16, mm_warp_8, 64, 2, tm_m, tn_m, tk_m, mm_warp_8 };
+             l_warptile_mmq = l_warptile_mmq_int = { 256, 128, 128, 32, mm_warp_8, 64, 2, tm_m, tn_m, tk_m, mm_warp_8 };
+             l_warptile_mmq_int_k = { 256, 128, 128, 32, mm_warp_16, 64, 1, 4, 2, 1, mm_warp_16 };
++            if (ggml_vk_rdna3_wide_matmul(device)) {
++                // 128x256 tile: 8 subgroups multiply while 256 extra threads load and dequantize the next tile.
++                // On RDNA3 the matrix cores share the vector ALU, so a wide N spreads the dequant cost over more columns.
++                const uint32_t producers = 256;
++                xl_warptile_mmq = { 8 * mm_warp_8 + producers, 128, 256, 32, 64, 64, 2, tm_m, tn_m, tk_m, mm_warp_8, producers };
++                xl_mmq_wg_denoms = { 128, 256, 1 };
++                // the 128x128 tile gets producers too, for weight types whose lookup tables don't fit the wide tile
++                l_warptile_mmq_cm1 = { 256 + producers, 128, 128, 32, mm_warp_8, 64, 2, tm_m, tn_m, tk_m, mm_warp_8, producers };
++            }
+         }
+ 
+         l_mmq_wg_denoms = l_wg_denoms = {128, 128, 1 };
+@@ -4826,23 +4848,44 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+     }
+ #endif
+ 
+-    auto const &ggml_vk_mul_mm_spec = [&device](std::vector<uint32_t> spec, bool aligned) {
++    // A 2-element pad keeps rows 8-byte aligned and frees shared memory for more workgroups
++    const bool mm_amd_pad2 = ggml_vk_rdna3_wide_matmul(device);
++
++    // warptile[11], if present, is PRODUCER_THREADS
++    auto const &ggml_vk_mul_mm_spec = [&device, mm_amd_pad2](std::vector<uint32_t> spec, bool aligned) {
++        uint32_t producers = 0;
++        if (spec.size() > 11) { producers = spec[11]; spec.resize(11); }
+         spec.push_back(aligned ? 1u : 0u);  // constantID=11: ALIGNED
+         if (device->vendor_id == VK_VENDOR_ID_INTEL && device->coopmat_support &&
+             device->driver_id == vk::DriverId::eIntelProprietaryWindows) {
+             spec.push_back(0u);  // constantID=12: SHMEM_STRIDE_PAD = 0
+             spec.push_back(1u);  // constantID=13: APPLY_SLM_A_RESHAPE = true
++        } else if (mm_amd_pad2 || producers) {
++            spec.push_back(mm_amd_pad2 ? 2u : 4u);  // constantID=12: SHMEM_STRIDE_PAD
++            spec.push_back(0u);                     // constantID=13: APPLY_SLM_A_RESHAPE = false
++        }
++        if (producers) {
++            spec.push_back(0u);         // constantID=14: unused
++            spec.push_back(producers);  // constantID=15: PRODUCER_THREADS
+         }
+         return spec;
+     };
+ 
+-    auto const &ggml_vk_mul_mm_spec_quant = [&device](std::vector<uint32_t> spec, bool aligned, uint32_t type) {
++    auto const &ggml_vk_mul_mm_spec_quant = [&device, mm_amd_pad2](std::vector<uint32_t> spec, bool aligned, uint32_t type) {
++        uint32_t producers = 0;
++        if (spec.size() > 11) { producers = spec[11]; spec.resize(11); }
+         spec.push_back(aligned ? 1u : 0u);  // constantID=11: ALIGNED
+         spec.push_back(type);               // constantID=12: MmTypeA
+         if (device->vendor_id == VK_VENDOR_ID_INTEL && device->coopmat_support &&
+             device->driver_id == vk::DriverId::eIntelProprietaryWindows) {
+             spec.push_back(0u);  // constantID=13: SHMEM_STRIDE_PAD = 0
+             spec.push_back(1u);  // constantID=14: APPLY_SLM_A_RESHAPE = true
++        } else if (mm_amd_pad2 || producers) {
++            spec.push_back(mm_amd_pad2 ? 2u : 4u);  // constantID=13: SHMEM_STRIDE_PAD
++            spec.push_back(0u);                     // constantID=14: APPLY_SLM_A_RESHAPE = false
++        }
++        if (producers) {
++            spec.push_back(producers);  // constantID=15: PRODUCER_THREADS
+         }
+         return spec;
+     };
+@@ -4919,7 +4962,10 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+ 
+     auto filter_tc = [&](const std::vector<vk_tile_config>& configs, ggml_type type, bool is_id, bool is_int = false) -> std::vector<vk_tile_config> {
+         std::vector<vk_tile_config> result;
+-        bool enabled[3];
++        bool enabled[4] = { false, false, false, false };
++        if (configs.size() > 3) {
++            enabled[3] = !is_id && !is_int && ggml_vk_matmul_shmem_support(device, configs[3].warptile, false, type);
++        }
+         if (is_int) {
+             enabled[0] = is_id ? device->mul_mat_id_s_int[type] : device->mul_mat_s_int[type];
+             enabled[1] = is_id ? device->mul_mat_id_m_int[type] : device->mul_mat_m_int[type];
+@@ -4929,7 +4975,11 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+             enabled[1] = is_id ? device->mul_mat_id_m[type] : device->mul_mat_m[type];
+             enabled[2] = is_id ? device->mul_mat_id_l[type] : device->mul_mat_l[type];
+         }
+-        for (size_t i = 0; i < configs.size() && i < 3; i++) {
++        for (size_t i = 0; i < configs.size() && i < 4; i++) {
++            // producer tiles double their buffers
++            if (i < 3 && enabled[i] && configs[i].warptile.size() > 11) {
++                enabled[i] = ggml_vk_matmul_shmem_support(device, configs[i].warptile, is_id, type);
++            }
+             if (enabled[i]) result.push_back(configs[i]);
+         }
+         return result;
+@@ -5054,6 +5104,14 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+         // Intel coopmat1 pins each pipeline's required subgroup size to its warptile WARP element.
+         const bool cm1_pin = device->vendor_id == VK_VENDOR_ID_INTEL;
+ 
++        std::vector<vk_tile_config> tc_mmq_cm1 = tc_mmq;
++        if (!l_warptile_mmq_cm1.empty()) {
++            tc_mmq_cm1[2].warptile = l_warptile_mmq_cm1;
++        }
++        if (!xl_warptile_mmq.empty()) {
++            tc_mmq_cm1.push_back({ xl_warptile_mmq, xl_mmq_wg_denoms, l_align });
++        }
++
+         // Intel coopmat1 uses a dedicated large-tile config for quant matmul_id.
+         std::vector<vk_tile_config> tc_mmq_id = tc_mmq;
+         if (cm1_pin) {
+@@ -5089,35 +5147,35 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+ #endif
+         for (const auto type : non_lut_quant_types) {
+             if (device->coopmat_acc_f16_support) {
+-                cm1_create_quant({type, GGML_TYPE_F32, false, true},  tc_mmq, "matmul_quant_f32_f16acc", matmul_quant_f32_f16acc_cm1_len, matmul_quant_f32_f16acc_cm1_data, sizeof(vk_mat_mat_push_constants), 3);
+-                cm1_create_quant({type, GGML_TYPE_F16, false, true},  tc_mmq, "matmul_quant_f16_f16acc", matmul_quant_f16_f16acc_cm1_len, matmul_quant_f16_f16acc_cm1_data, sizeof(vk_mat_mat_push_constants), 3);
++                cm1_create_quant({type, GGML_TYPE_F32, false, true},  tc_mmq_cm1, "matmul_quant_f32_f16acc", matmul_quant_f32_f16acc_cm1_len, matmul_quant_f32_f16acc_cm1_data, sizeof(vk_mat_mat_push_constants), 3);
++                cm1_create_quant({type, GGML_TYPE_F16, false, true},  tc_mmq_cm1, "matmul_quant_f16_f16acc", matmul_quant_f16_f16acc_cm1_len, matmul_quant_f16_f16acc_cm1_data, sizeof(vk_mat_mat_push_constants), 3);
+             }
+             if (device->coopmat_acc_f32_support) {
+-                cm1_create_quant({type, GGML_TYPE_F32, false, false}, tc_mmq, "matmul_quant_f32",        matmul_quant_f32_cm1_len,        matmul_quant_f32_cm1_data,        sizeof(vk_mat_mat_push_constants), 3);
+-                cm1_create_quant({type, GGML_TYPE_F16, false, false}, tc_mmq, "matmul_quant_f16",        matmul_quant_f16_cm1_len,        matmul_quant_f16_cm1_data,        sizeof(vk_mat_mat_push_constants), 3);
++                cm1_create_quant({type, GGML_TYPE_F32, false, false}, tc_mmq_cm1, "matmul_quant_f32",        matmul_quant_f32_cm1_len,        matmul_quant_f32_cm1_data,        sizeof(vk_mat_mat_push_constants), 3);
++                cm1_create_quant({type, GGML_TYPE_F16, false, false}, tc_mmq_cm1, "matmul_quant_f16",        matmul_quant_f16_cm1_len,        matmul_quant_f16_cm1_data,        sizeof(vk_mat_mat_push_constants), 3);
+             }
+         }
+         // The _f16 variants provide the f16 B-type pipeline used when y_non_contig converts f32->f16.
+ #define X_CM1(TYPE, tstr) \
+         if (device->coopmat_acc_f16_support) { \
+-            cm1_create({TYPE, GGML_TYPE_F32, false, true},  tc_mmq, "matmul_" #tstr "_f32_f16acc", matmul_##tstr##_f32_f16acc_cm1_len, matmul_##tstr##_f32_f16acc_cm1_data, sizeof(vk_mat_mat_push_constants), 3); \
+-            cm1_create({TYPE, GGML_TYPE_F16, false, true},  tc_mmq, "matmul_" #tstr "_f16_f16acc", matmul_##tstr##_f16_f16acc_cm1_len, matmul_##tstr##_f16_f16acc_cm1_data, sizeof(vk_mat_mat_push_constants), 3); \
++            cm1_create({TYPE, GGML_TYPE_F32, false, true},  tc_mmq_cm1, "matmul_" #tstr "_f32_f16acc", matmul_##tstr##_f32_f16acc_cm1_len, matmul_##tstr##_f32_f16acc_cm1_data, sizeof(vk_mat_mat_push_constants), 3); \
++            cm1_create({TYPE, GGML_TYPE_F16, false, true},  tc_mmq_cm1, "matmul_" #tstr "_f16_f16acc", matmul_##tstr##_f16_f16acc_cm1_len, matmul_##tstr##_f16_f16acc_cm1_data, sizeof(vk_mat_mat_push_constants), 3); \
+         } \
+         if (device->coopmat_acc_f32_support) { \
+-            cm1_create({TYPE, GGML_TYPE_F32, false, false}, tc_mmq, "matmul_" #tstr "_f32",        matmul_##tstr##_f32_cm1_len,        matmul_##tstr##_f32_cm1_data,        sizeof(vk_mat_mat_push_constants), 3); \
+-            cm1_create({TYPE, GGML_TYPE_F16, false, false}, tc_mmq, "matmul_" #tstr "_f16",        matmul_##tstr##_f16_cm1_len,        matmul_##tstr##_f16_cm1_data,        sizeof(vk_mat_mat_push_constants), 3); \
++            cm1_create({TYPE, GGML_TYPE_F32, false, false}, tc_mmq_cm1, "matmul_" #tstr "_f32",        matmul_##tstr##_f32_cm1_len,        matmul_##tstr##_f32_cm1_data,        sizeof(vk_mat_mat_push_constants), 3); \
++            cm1_create({TYPE, GGML_TYPE_F16, false, false}, tc_mmq_cm1, "matmul_" #tstr "_f16",        matmul_##tstr##_f16_cm1_len,        matmul_##tstr##_f16_cm1_data,        sizeof(vk_mat_mat_push_constants), 3); \
+         }
+         FOR_EACH_LUT_TYPE_NONFP4(X_CM1)
+ #if defined(GGML_VULKAN_FLOAT_E2M1_GLSLC_SUPPORT) && defined(GGML_VULKAN_FLOAT_E4M3_GLSLC_SUPPORT)
+         if (device->ocp_fp4) {
+ #define X_CM1_OCP(TYPE, tstr) \
+             if (device->coopmat_acc_f16_support) { \
+-                cm1_create({TYPE, GGML_TYPE_F32, false, true},  tc_mmq, "matmul_" #tstr "_f32_ocp_f16acc", matmul_##tstr##_f32_ocp_f16acc_cm1_len, matmul_##tstr##_f32_ocp_f16acc_cm1_data, sizeof(vk_mat_mat_push_constants), 3); \
+-                cm1_create({TYPE, GGML_TYPE_F16, false, true},  tc_mmq, "matmul_" #tstr "_f16_ocp_f16acc", matmul_##tstr##_f16_ocp_f16acc_cm1_len, matmul_##tstr##_f16_ocp_f16acc_cm1_data, sizeof(vk_mat_mat_push_constants), 3); \
++                cm1_create({TYPE, GGML_TYPE_F32, false, true},  tc_mmq_cm1, "matmul_" #tstr "_f32_ocp_f16acc", matmul_##tstr##_f32_ocp_f16acc_cm1_len, matmul_##tstr##_f32_ocp_f16acc_cm1_data, sizeof(vk_mat_mat_push_constants), 3); \
++                cm1_create({TYPE, GGML_TYPE_F16, false, true},  tc_mmq_cm1, "matmul_" #tstr "_f16_ocp_f16acc", matmul_##tstr##_f16_ocp_f16acc_cm1_len, matmul_##tstr##_f16_ocp_f16acc_cm1_data, sizeof(vk_mat_mat_push_constants), 3); \
+             } \
+             if (device->coopmat_acc_f32_support) { \
+-                cm1_create({TYPE, GGML_TYPE_F32, false, false}, tc_mmq, "matmul_" #tstr "_f32_ocp",        matmul_##tstr##_f32_ocp_cm1_len,        matmul_##tstr##_f32_ocp_cm1_data,        sizeof(vk_mat_mat_push_constants), 3); \
+-                cm1_create({TYPE, GGML_TYPE_F16, false, false}, tc_mmq, "matmul_" #tstr "_f16_ocp",        matmul_##tstr##_f16_ocp_cm1_len,        matmul_##tstr##_f16_ocp_cm1_data,        sizeof(vk_mat_mat_push_constants), 3); \
++                cm1_create({TYPE, GGML_TYPE_F32, false, false}, tc_mmq_cm1, "matmul_" #tstr "_f32_ocp",        matmul_##tstr##_f32_ocp_cm1_len,        matmul_##tstr##_f32_ocp_cm1_data,        sizeof(vk_mat_mat_push_constants), 3); \
++                cm1_create({TYPE, GGML_TYPE_F16, false, false}, tc_mmq_cm1, "matmul_" #tstr "_f16_ocp",        matmul_##tstr##_f16_ocp_cm1_len,        matmul_##tstr##_f16_ocp_cm1_data,        sizeof(vk_mat_mat_push_constants), 3); \
+             }
+             FOR_EACH_LUT_FP4_TYPE(X_CM1_OCP)
+ #undef X_CM1_OCP
+@@ -5466,6 +5524,12 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+             if (m <= 32 || n <= 32) return 0;
+             if (configs.size() == 2) return 1;
+             if (m <= 64 || n <= 64) return 1;
++            if (configs.size() == 4) {
++                // Wide tile is ~15% faster, unless it pads N more than that compared to the large tile
++                const uint32_t bn_l  = configs[2].unaligned->wg_denoms[1];
++                const uint32_t bn_xl = configs[3].unaligned->wg_denoms[1];
++                return CEIL_DIV(n, bn_xl) * bn_xl * 100 <= CEIL_DIV(n, bn_l) * bn_l * 115 ? 3 : 2;
++            }
+             return (uint32_t)configs.size() - 1;
+         };
+         device->matmul_id_tile_selector = device->matmul_tile_selector;
+@@ -8915,7 +8979,9 @@ static void ggml_vk_buffer_read_2d(vk_buffer& src, size_t offset, void * dst, si
+     // If the device is not an UMA device the memory is host-accessible through rebar. While writing
+     // through PCIe is sufficient fast reading back data from PCIe is slower than going through
+     // the HW device to host copy path.
+-    if(src->memory_property_flags & vk::MemoryPropertyFlagBits::eHostVisible && src->device->uma) {
++    // On UMA, CPU reads of uncached (write-combined) memory are also very slow, so read it directly only if it is host-cached.
++    if (src->memory_property_flags & vk::MemoryPropertyFlagBits::eHostVisible && src->device->uma &&
++        src->memory_property_flags & vk::MemoryPropertyFlagBits::eHostCached) {
+         GGML_ASSERT(src->memory_property_flags & vk::MemoryPropertyFlagBits::eHostCoherent);
+ 
+         std::lock_guard<std::recursive_mutex> guard(src->device->mutex);
+@@ -13481,9 +13547,33 @@ static void ggml_vk_opt_step_sgd(ggml_backend_vk_context * ctx, vk_context& subc
+     ggml_vk_op_f32<vk_op_push_constants>(ctx, subctx, src0, src1, src2, nullptr, dst, GGML_OP_OPT_STEP_SGD, { (uint32_t)n, 0, 0.0f, 0.0f, 0.0f, 0.0f });
+ }
+ 
++static void ggml_vk_cpy(ggml_backend_vk_context * ctx, vk_context& subctx, const ggml_tensor * src0, ggml_tensor * dst);
++
+ static void ggml_vk_concat(ggml_backend_vk_context * ctx, vk_context& subctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
+     int * op_params = (int *)dst->op_params;
+ 
++    // Concat on dim 0 with a transposed src1 (dim 1 innermost, e.g. conv state + transposed activations):
++    // copy each part into its view of dst, so src1 goes through the tiled transpose copy.
++    if (op_params[0] == 0 && dst->type == src1->type && src0->type == dst->type &&
++        (dst->type == GGML_TYPE_F32 || dst->type == GGML_TYPE_F16) &&
++        src1->nb[1] == ggml_type_size(src1->type) && src1->ne[1] > 1 && src1->ne[0] >= 32) {
++        ggml_tensor part0 = *dst;
++        part0.op = GGML_OP_CPY;
++        part0.view_src = dst->view_src ? dst->view_src : dst;
++        part0.view_offs = dst->view_src ? dst->view_offs : 0;
++        ggml_tensor part1 = part0;
++
++        part0.ne[0] = src0->ne[0];
++        part1.ne[0] = src1->ne[0];
++        const size_t offs1 = src0->ne[0] * dst->nb[0];
++        part1.data = (char *) dst->data + offs1;
++        part1.view_offs += offs1;
++
++        ggml_vk_cpy(ctx, subctx, src0, &part0);
++        ggml_vk_cpy(ctx, subctx, src1, &part1);
++        return;
++    }
++
+     const uint32_t unit_size = ggml_vk_concat_unit_size(dst->type);
+     const uint32_t units_per_block = ggml_type_size(dst->type) / unit_size;
+     const uint32_t block_size = ggml_blck_size(dst->type);
+diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mm.comp b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mm.comp
+index 90e4e11..fee975f 100644
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mm.comp
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mm.comp
+@@ -58,13 +58,15 @@ uint mm_load_vec_a() {
+     case GGML_TYPE_Q4_0:
+     case GGML_TYPE_Q4_1:
+     case GGML_TYPE_Q5_1:
++    case GGML_TYPE_Q4_K:
++    case GGML_TYPE_Q5_K:
+         return 8u;
+     case GGML_TYPE_Q2_0:
+     case GGML_TYPE_Q5_0:
+     case GGML_TYPE_Q8_0:
+     case GGML_TYPE_Q2_K:
+-    case GGML_TYPE_Q4_K:
+-    case GGML_TYPE_Q5_K:
++    case GGML_TYPE_Q3_K:
++    case GGML_TYPE_Q6_K:
+         return 4u;
+     default:
+         return 2u;
+@@ -191,13 +193,24 @@ const bool APPLY_SLM_A_RESHAPE = false;
+ #endif
+ #define SHMEM_STRIDE (BK / 2 + SHMEM_STRIDE_PAD)
+ 
+-shared FLOAT_TYPEV2 buf_a[BM * SHMEM_STRIDE];
+-shared FLOAT_TYPEV2 buf_b[BN * SHMEM_STRIDE];
++// Threads at the end of the workgroup that only load tiles, while the other threads multiply (0: all threads do both)
++layout (constant_id = 15) const uint PRODUCER_THREADS = 0;
++#if defined(COOPMAT) && !defined(MUL_MAT_ID)
++#define MM_PRODUCERS PRODUCER_THREADS
++#else
++#define MM_PRODUCERS 0
++#endif
++const uint NUM_SHMEM_BUFS = MM_PRODUCERS > 0 ? 2 : 1;
++
++shared FLOAT_TYPEV2 buf_a[BM * SHMEM_STRIDE * NUM_SHMEM_BUFS];
++shared FLOAT_TYPEV2 buf_b[BN * SHMEM_STRIDE * NUM_SHMEM_BUFS];
++uint buf_a_store_base = 0;
++uint buf_b_store_base = 0;
+ 
+ #define NUM_WARPS (BLOCK_SIZE / WARP)
+ 
+ #ifdef COOPMAT
+-shared ACC_TYPE coopmat_stage[TM * TN * NUM_WARPS];
++shared ACC_TYPE coopmat_stage[TM * TN * ((BLOCK_SIZE - MM_PRODUCERS) / WARP)];
+ #endif
+ 
+ #include "mul_mm_id_funcs.glsl"
+@@ -276,13 +289,19 @@ void main() {
+     const uint LOAD_VEC_B_EFF = (ALIGNED != 0) ? LOAD_VEC_B : 1;
+     const uint LOAD_VEC_BATCH_B = (ALIGNED != 0) ? 1 : 2;
+ 
+-    const uint loadr_a = gl_LocalInvocationID.x % (BK / LOAD_VEC_A_EFF / LOAD_VEC_BATCH_A);
+-    const uint loadc_a = gl_LocalInvocationID.x / (BK / LOAD_VEC_A_EFF / LOAD_VEC_BATCH_A);
+-    const uint loadr_b = gl_LocalInvocationID.x % (BK / LOAD_VEC_B_EFF / LOAD_VEC_BATCH_B);
+-    const uint loadc_b = gl_LocalInvocationID.x / (BK / LOAD_VEC_B_EFF / LOAD_VEC_BATCH_B);
++    // With producer threads, only they load tiles; their index starts at 0.
++    const uint consumer_threads = gl_WorkGroupSize.x - MM_PRODUCERS;
++    const bool is_producer = MM_PRODUCERS > 0 && gl_LocalInvocationID.x >= consumer_threads;
++    const uint load_tid = MM_PRODUCERS > 0 ? gl_LocalInvocationID.x - consumer_threads : gl_LocalInvocationID.x;
++    const uint load_threads = MM_PRODUCERS > 0 ? MM_PRODUCERS : gl_WorkGroupSize.x;
+ 
+-    const uint loadstride_a = gl_WorkGroupSize.x * LOAD_VEC_A_EFF * LOAD_VEC_BATCH_A / BK;
+-    const uint loadstride_b = gl_WorkGroupSize.x * LOAD_VEC_B_EFF * LOAD_VEC_BATCH_B / BK;
++    const uint loadr_a = load_tid % (BK / LOAD_VEC_A_EFF / LOAD_VEC_BATCH_A);
++    const uint loadc_a = load_tid / (BK / LOAD_VEC_A_EFF / LOAD_VEC_BATCH_A);
++    const uint loadr_b = load_tid % (BK / LOAD_VEC_B_EFF / LOAD_VEC_BATCH_B);
++    const uint loadc_b = load_tid / (BK / LOAD_VEC_B_EFF / LOAD_VEC_BATCH_B);
++
++    const uint loadstride_a = load_threads * LOAD_VEC_A_EFF * LOAD_VEC_BATCH_A / BK;
++    const uint loadstride_b = load_threads * LOAD_VEC_B_EFF * LOAD_VEC_BATCH_B / BK;
+ 
+ #ifdef MUL_MAT_ID
+     if (p.hoist_row_ids != 0) {
+@@ -359,6 +378,56 @@ void main() {
+     }
+ #endif
+ 
++#if defined(COOPMAT) && !defined(MUL_MAT_ID)
++    if (MM_PRODUCERS > 0) {
++        // Producers fill one buffer while consumers multiply from the other, one barrier per tile.
++        if (is_producer) {
++            [[unroll]] for (uint l = 0; l < BM; l += loadstride_a) {
++                load_a_to_shmem(pos_a, loadr_a, loadc_a + l, ir * BM + loadc_a + l, start_k, end_k);
++            }
++            [[unroll]] for (uint l = 0; l < BN; l += loadstride_b) {
++                load_b_to_shmem(pos_b, loadr_b, loadc_b + l, ic * BN + loadc_b + l, start_k, end_k);
++            }
++            pos_a += BK / LOAD_VEC_A_EFF;
++            pos_b += BK / LOAD_VEC_B_EFF;
++        }
++        barrier();
++
++        uint cur = 0;
++        for (uint block = start_k; block < end_k; block += BK) {
++            if (is_producer) {
++                if (block + BK < end_k) {
++                    buf_a_store_base = (cur ^ 1) * (BM * SHMEM_STRIDE);
++                    buf_b_store_base = (cur ^ 1) * (BN * SHMEM_STRIDE);
++                    [[unroll]] for (uint l = 0; l < BM; l += loadstride_a) {
++                        load_a_to_shmem(pos_a, loadr_a, loadc_a + l, ir * BM + loadc_a + l, block + BK, end_k);
++                    }
++                    [[unroll]] for (uint l = 0; l < BN; l += loadstride_b) {
++                        load_b_to_shmem(pos_b, loadr_b, loadc_b + l, ic * BN + loadc_b + l, block + BK, end_k);
++                    }
++                    pos_a += BK / LOAD_VEC_A_EFF;
++                    pos_b += BK / LOAD_VEC_B_EFF;
++                }
++            } else {
++                const uint a_base = cur * (BM * SHMEM_STRIDE);
++                const uint b_base = cur * (BN * SHMEM_STRIDE);
++                [[unroll]] for (uint i = 0; i < BK; i += TK) {
++                    [[unroll]] for (uint cm_row = 0; cm_row < cms_per_row; cm_row++) {
++                        coopMatLoad(cache_a, buf_a, a_base + a_shmem_index(warp_r * WM + cm_row * TM, i / 2), a_shmem_stride(), gl_CooperativeMatrixLayoutRowMajor);
++
++                        [[unroll]] for (uint cm_col = 0; cm_col < cms_per_col; cm_col++) {
++                            coopMatLoad(cache_b, buf_b, b_base + (warp_c * WN + cm_col * TN) * SHMEM_STRIDE + i / 2, SHMEM_STRIDE, gl_CooperativeMatrixLayoutColumnMajor);
++
++                            sums[cm_col * cms_per_row + cm_row] = coopMatMulAdd(cache_a, cache_b, sums[cm_col * cms_per_row + cm_row]);
++                        }
++                    }
++                }
++            }
++            barrier();
++            cur ^= 1;
++        }
++    } else
++#endif
+     for (uint block = start_k; block < end_k; block += BK) {
+         [[unroll]] for (uint l = 0; l < BM; l += loadstride_a) {
+             load_a_to_shmem(pos_a, loadr_a, loadc_a + l, ir * BM + loadc_a + l, block, end_k);
+@@ -429,6 +498,10 @@ void main() {
+         barrier();
+     }
+ 
++    if (is_producer) {
++        return;
++    }
++
+ #if defined(ACC_TYPE_MAX)
+ #ifdef COOPMAT
+     [[unroll]] for (uint j = 0; j < cms_per_row * cms_per_col; j++) {
+diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mm_funcs.glsl b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mm_funcs.glsl
+index dd05fb1..7fa212e 100644
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mm_funcs.glsl
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mm_funcs.glsl
+@@ -14,7 +14,7 @@ uint a_shmem_stride() {
+ }
+ 
+ void store_a(uint m, uint k_pair, FLOAT_TYPEV2 value) {
+-    buf_a[a_shmem_index(m, k_pair)] = value;
++    buf_a[buf_a_store_base + a_shmem_index(m, k_pair)] = value;
+ }
+ 
+ void load_a_to_shmem(const uint pos_a, const uint row, const uint col, const uint idx_m, const uint block, const uint end_k) {
+@@ -210,73 +210,88 @@ void load_a_to_shmem(const uint pos_a, const uint row, const uint col, const uin
+                                             (sign & 128) != 0 ? -grid1.w : grid1.w));
+ 
+ #elif defined(DATA_A_IQ3_XXS)
++    // 8 values per call: two grid entries share the sign word and the scale
+     const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
+     const uint k_pair = row * LOAD_VEC_A / 2;
+ 
+-    const uint ib = idx / 64;
+-    const uint iqs = idx % 64;
+-    const uint is = QUANT_K_IQ3_XXS / 4 + 4 * (iqs / 8);
++    const uint ib = idx / 32;
++    const uint ib8 = idx % 32;
++    const uint is = QUANT_K_IQ3_XXS / 4 + 4 * (ib8 / 4);
+ 
+     const float d = float(data_a[ib].d);
+-    const uint qs = data_a[ib].qs[iqs];
++    const uint qs0 = data_a[ib].qs[2 * ib8];
++    const uint qs1 = data_a[ib].qs[2 * ib8 + 1];
+     const uint signs = pack32(u16vec2(
+         data_a_packed16[ib].qs[is/2],
+         data_a_packed16[ib].qs[is/2+1]
+     ));
+     const float db = d * 0.5 * (0.5 + (signs >> 28));
+-    const uint32_t sign7 = bitfieldExtract(signs, 7 * (int(iqs / 2) % 4), 7);
+-    const uint sign = (sign7 | (bitCount(sign7) << 7)) >> (4 * (idx % 2));
+-    const uint grid = iq3xxs_grid[qs];
+-    const vec4 v = db * vec4(unpack8(grid));
+-
+-    store_a(col, k_pair, FLOAT_TYPEV2((sign &   1) != 0 ? -v.x : v.x,
+-                                        (sign &   2) != 0 ? -v.y : v.y));
+-
+-    store_a(col, k_pair + 1, FLOAT_TYPEV2((sign &   4) != 0 ? -v.z : v.z,
+-                                        (sign &   8) != 0 ? -v.w : v.w));
++    const uint32_t sign7 = bitfieldExtract(signs, 7 * (int(ib8) % 4), 7);
++    const uint sign = sign7 | (bitCount(sign7) << 7);
++    const vec4 v0 = db * vec4(unpack8(iq3xxs_grid[qs0]));
++    const vec4 v1 = db * vec4(unpack8(iq3xxs_grid[qs1]));
++
++    store_a(col, k_pair, FLOAT_TYPEV2((sign &   1) != 0 ? -v0.x : v0.x,
++                                        (sign &   2) != 0 ? -v0.y : v0.y));
++    store_a(col, k_pair + 1, FLOAT_TYPEV2((sign &   4) != 0 ? -v0.z : v0.z,
++                                        (sign &   8) != 0 ? -v0.w : v0.w));
++    store_a(col, k_pair + 2, FLOAT_TYPEV2((sign &  16) != 0 ? -v1.x : v1.x,
++                                        (sign &  32) != 0 ? -v1.y : v1.y));
++    store_a(col, k_pair + 3, FLOAT_TYPEV2((sign &  64) != 0 ? -v1.z : v1.z,
++                                        (sign & 128) != 0 ? -v1.w : v1.w));
+ 
+ #elif defined(DATA_A_IQ3_S)
++    // 8 values per call: two grid entries share the sign byte, the qh byte and the scale
+     const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
+     const uint k_pair = row * LOAD_VEC_A / 2;
+ 
+-    const uint ib = idx / 64;
+-    const uint iqs = idx % 64;
+-    const uint iqh = iqs / 8;
++    const uint ib = idx / 32;
++    const uint ib8 = idx % 32;
++    const uint qhshift = 2 * (ib8 % 4);
+ 
+     const float d = float(data_a[ib].d);
+-    const uint qs = data_a[ib].qs[iqs];
+-    const uint qh = data_a[ib].qh[iqh];
+-    const int8_t sign = int8_t(data_a[ib].signs[iqs / 2] >> (4 * (idx % 2)));
+-    const uint scale = data_a[ib].scales[iqs / 16];
+-    const i8vec2 sign01 = i8vec2(1 - (2 & i8vec2(sign << 1, sign)));
+-    const float db = d * (1 + 2 * ((scale >> (4 * (iqh & 1))) & 0xf));
+-    const uint32_t grid = iq3s_grid[qs | ((qh << (8 - (iqs % 8))) & 256)];
+-    const vec4 v = db * vec4(unpack8(grid));
+-
+-    store_a(col, k_pair, FLOAT_TYPEV2((sign &   1) != 0 ? -v.x : v.x,
+-                                        (sign &   2) != 0 ? -v.y : v.y));
+-
+-    store_a(col, k_pair + 1, FLOAT_TYPEV2((sign &   4) != 0 ? -v.z : v.z,
+-                                        (sign &   8) != 0 ? -v.w : v.w));
++    const uint qs0 = data_a[ib].qs[2 * ib8];
++    const uint qs1 = data_a[ib].qs[2 * ib8 + 1];
++    const uint qh = data_a[ib].qh[ib8 / 4];
++    const uint sign = data_a[ib].signs[ib8];
++    const uint scale = data_a[ib].scales[ib8 / 8];
++    const float db = d * (1 + 2 * ((scale >> (4 * ((ib8 / 4) & 1))) & 0xf));
++    const vec4 v0 = db * vec4(unpack8(iq3s_grid[qs0 | ((qh << (8 - qhshift)) & 256)]));
++    const vec4 v1 = db * vec4(unpack8(iq3s_grid[qs1 | ((qh << (7 - qhshift)) & 256)]));
++
++    store_a(col, k_pair, FLOAT_TYPEV2((sign &   1) != 0 ? -v0.x : v0.x,
++                                        (sign &   2) != 0 ? -v0.y : v0.y));
++    store_a(col, k_pair + 1, FLOAT_TYPEV2((sign &   4) != 0 ? -v0.z : v0.z,
++                                        (sign &   8) != 0 ? -v0.w : v0.w));
++    store_a(col, k_pair + 2, FLOAT_TYPEV2((sign &  16) != 0 ? -v1.x : v1.x,
++                                        (sign &  32) != 0 ? -v1.y : v1.y));
++    store_a(col, k_pair + 3, FLOAT_TYPEV2((sign &  64) != 0 ? -v1.z : v1.z,
++                                        (sign & 128) != 0 ? -v1.w : v1.w));
+ 
+ #elif defined(DATA_A_IQ4_XS)
++    // 8 values per call: the same nibble half of two adjacent qs words, sharing the scales
+     const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
+     const uint k_pair = row * LOAD_VEC_A / 2;
+ 
+-    const uint ib = idx / 64;
+-    const uint ib32 = (idx % 64) / 8;
+-    const uint iq = 4 * ib32 + (idx % 4);
++    const uint ib = idx / 32;
++    const uint ib32 = (idx % 32) / 4;
++    const uint iq = 4 * ib32 + 2 * (idx % 2);
++    const uint qshift = 2 * (idx & 2);
+ 
+     const uint sl = (data_a[ib].scales_l[ib32/2] >> (4 * (ib32 & 1))) & 0xF;
+     const uint sh = ((data_a[ib].scales_h) >> (2 * ib32)) & 3;
+-    const uint qshift = idx & 4;
+-    u8vec4 qs = unpack8((uint(data_a_packed32[ib].qs[iq]) >> qshift) & 0x0F0F0F0F);
++    const u8vec4 q0 = unpack8((uint(data_a_packed32[ib].qs[iq]) >> qshift) & 0x0F0F0F0F);
++    const u8vec4 q1 = unpack8((uint(data_a_packed32[ib].qs[iq + 1]) >> qshift) & 0x0F0F0F0F);
+ 
+     const float d = float(data_a[ib].d);
+-    const vec4 v = d * float(int(sl | (sh << 4)) - 32) * vec4(kvalues_iq4nl[qs.x], kvalues_iq4nl[qs.y], kvalues_iq4nl[qs.z], kvalues_iq4nl[qs.w]);
+-
+-    store_a(col, k_pair, FLOAT_TYPEV2(v.xy));
+-    store_a(col, k_pair + 1, FLOAT_TYPEV2(v.zw));
++    const float dl = d * float(int(sl | (sh << 4)) - 32);
++    const vec4 v0 = dl * vec4(kvalues_iq4nl[q0.x], kvalues_iq4nl[q0.y], kvalues_iq4nl[q0.z], kvalues_iq4nl[q0.w]);
++    const vec4 v1 = dl * vec4(kvalues_iq4nl[q1.x], kvalues_iq4nl[q1.y], kvalues_iq4nl[q1.z], kvalues_iq4nl[q1.w]);
++
++    store_a(col, k_pair, FLOAT_TYPEV2(v0.xy));
++    store_a(col, k_pair + 1, FLOAT_TYPEV2(v0.zw));
++    store_a(col, k_pair + 2, FLOAT_TYPEV2(v1.xy));
++    store_a(col, k_pair + 3, FLOAT_TYPEV2(v1.zw));
+ #elif defined(DATA_A_IQ4_NL)
+     const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
+     const uint k_pair = row * LOAD_VEC_A / 4;
+@@ -474,13 +489,12 @@ void load_a_to_shmem(const uint pos_a, const uint row, const uint col, const uin
+         const uint idx = pos_a + col * p.stride_a / mm_load_vec_a() + row;
+         const uint k_pair = row * mm_load_vec_a() / 2;
+ 
+-        const uint ib = idx / 128;                   // 2 values per idx
+-        const uint iqs = idx % 128;                  // 0..127
++        const uint ib = idx / 64;                    // 4 values per idx, one scale group and bit plane
++        const uint iqs = (idx % 64) * 2;             // 0,2,4..126
+ 
+         const uint n = iqs / 64;                     // 0,1
+-        const uint qsi = n * 32 + (iqs % 16) * 2;    // 0,2,4..62
+-        const uint hmi =          (iqs % 16) * 2;    // 0,2,4..30
+-        const uint j = (iqs % 64) / 4;               // 0..3
++        const uint qsi = n * 32 + (iqs % 16) * 2;    // 0,4,8..60 (+32)
++        const uint hmi =          (iqs % 16) * 2;    // 0,4,8..28
+         const uint is = iqs / 8;                     // 0..15
+         const uint halfsplit = ((iqs % 64) / 16);    // 0,1,2,3
+         const uint qsshift = halfsplit * 2;          // 0,2,4,6
+@@ -489,23 +503,27 @@ void load_a_to_shmem(const uint pos_a, const uint row, const uint col, const uin
+                                 | (((a_q3_k.data[ib].scales[8 + (is % 4)] >> (2 * int(is / 4))) & 3) << 4));
+         const float dl = float(a_q3_k.data[ib].d) * float(us - 32);
+ 
+-        const vec2 qs = vec2(unpack8((uint(a_q3_k_p16.data[ib].qs[qsi / 2]) >> qsshift) & 0x0303).xy);
+-        const vec2 hm = vec2(unpack8(((uint(a_q3_k_p16.data[ib].hmask[hmi / 2]) >> (4 * n + halfsplit)) & 0x0101 ^ 0x0101) << 2).xy);
++        const uint qs32 = uint(a_q3_k_p16.data[ib].qs[qsi / 2]) | (uint(a_q3_k_p16.data[ib].qs[qsi / 2 + 1]) << 16);
++        const uint hm32 = uint(a_q3_k_p16.data[ib].hmask[hmi / 2]) | (uint(a_q3_k_p16.data[ib].hmask[hmi / 2 + 1]) << 16);
++        const vec4 qs = vec4(unpack8((qs32 >> qsshift) & 0x03030303));
++        const vec4 hm = vec4(unpack8(((hm32 >> (4 * n + halfsplit)) & 0x01010101 ^ 0x01010101) << 2));
+ 
+         store_a(col, k_pair, FLOAT_TYPEV2(dl * (qs.x - hm.x),
+                                         dl * (qs.y - hm.y)));
++        store_a(col, k_pair + 1, FLOAT_TYPEV2(dl * (qs.z - hm.z),
++                                        dl * (qs.w - hm.w)));
+ 
+     } else if (MmTypeA == GGML_TYPE_Q4_K) {
+         const uint idx = pos_a + col * p.stride_a / mm_load_vec_a() + row;
+         const uint k_pair = row * mm_load_vec_a() / 2;
+ 
+-        const uint ib = idx / 64;                  // 4 values per idx
+-        const uint iqs = (idx % 64) * 2;           // 0,2,4..126
++        const uint ib = idx / 32;                  // 8 values per idx, one scale
++        const uint iqs = (idx % 32) * 4;           // 0,4,8..124
+ 
+         const uint n = iqs / 32;                   // 0,1,2,3
+         const uint b = (iqs % 32) / 16;            // 0,1
+         const uint is = 2 * n + b;                 // 0..7
+-        const uint qsi = n * 32 + (iqs % 16) * 2;  // 0,2,4..126
++        const uint qsi = n * 32 + (iqs % 16) * 2;  // 0,8,16..120
+ 
+         const vec2 loadd = vec2(a_q4_k.data[ib].dm);
+ 
+@@ -527,22 +545,25 @@ void load_a_to_shmem(const uint pos_a, const uint row, const uint col, const uin
+         const float d = loadd.x * sc;
+         const float m = -loadd.y * mbyte;
+ 
+-        const vec4 q = vec4(unpack8((a_q4_k_p32.data[ib].qs[qsi / 4] >> (b * 4)) & 0x0F0F0F0F));
++        const vec4 q0 = vec4(unpack8((a_q4_k_p32.data[ib].qs[qsi / 4] >> (b * 4)) & 0x0F0F0F0F));
++        const vec4 q1 = vec4(unpack8((a_q4_k_p32.data[ib].qs[qsi / 4 + 1] >> (b * 4)) & 0x0F0F0F0F));
+ 
+-        store_a(col, k_pair, FLOAT_TYPEV2(fma(d, q.x, m), fma(d, q.y, m)));
+-        store_a(col, k_pair + 1, FLOAT_TYPEV2(fma(d, q.z, m), fma(d, q.w, m)));
++        store_a(col, k_pair, FLOAT_TYPEV2(fma(d, q0.x, m), fma(d, q0.y, m)));
++        store_a(col, k_pair + 1, FLOAT_TYPEV2(fma(d, q0.z, m), fma(d, q0.w, m)));
++        store_a(col, k_pair + 2, FLOAT_TYPEV2(fma(d, q1.x, m), fma(d, q1.y, m)));
++        store_a(col, k_pair + 3, FLOAT_TYPEV2(fma(d, q1.z, m), fma(d, q1.w, m)));
+     } else if (MmTypeA == GGML_TYPE_Q5_K) {
+         const uint idx = pos_a + col * p.stride_a / mm_load_vec_a() + row;
+         const uint k_pair = row * mm_load_vec_a() / 2;
+ 
+-        const uint ib = idx / 64;                  // 4 values per idx
+-        const uint iqs = (idx % 64) * 2;           // 0,2,4..126
++        const uint ib = idx / 32;                  // 8 values per idx, one scale
++        const uint iqs = (idx % 32) * 4;           // 0,4,8..124
+ 
+         const uint n = iqs / 32;                   // 0,1,2,3
+         const uint b = (iqs % 32) / 16;            // 0,1
+         const uint is = 2 * n + b;                 // 0..7
+-        const uint qsi = n * 32 + (iqs % 16) * 2;  // 0,2,4..126
+-        const uint qhi = (iqs % 16) * 2;           // 0,2,4..30
++        const uint qsi = n * 32 + (iqs % 16) * 2;  // 0,8,16..120
++        const uint qhi = (iqs % 16) * 2;           // 0,8,16,24
+ 
+         const vec2 loadd = vec2(a_q5_k.data[ib].dm);
+ 
+@@ -564,34 +585,40 @@ void load_a_to_shmem(const uint pos_a, const uint row, const uint col, const uin
+         const float d = loadd.x * sc;
+         const float m = -loadd.y * mbyte;
+ 
+-        const uint qs = (a_q5_k_p32.data[ib].qs[qsi / 4] >> (b * 4)) & 0x0F0F0F0F;
+-        const uint qh = ((a_q5_k_p32.data[ib].qh[qhi / 4] >> (iqs / 16)) & 0x01010101) << 4;
+-        const vec4 q = vec4(unpack8(qs | qh));
+-
+-        store_a(col, k_pair, FLOAT_TYPEV2(fma(d, q.x, m), fma(d, q.y, m)));
+-        store_a(col, k_pair + 1, FLOAT_TYPEV2(fma(d, q.z, m), fma(d, q.w, m)));
++        const uint qs0 = (a_q5_k_p32.data[ib].qs[qsi / 4] >> (b * 4)) & 0x0F0F0F0F;
++        const uint qs1 = (a_q5_k_p32.data[ib].qs[qsi / 4 + 1] >> (b * 4)) & 0x0F0F0F0F;
++        const uint qh0 = ((a_q5_k_p32.data[ib].qh[qhi / 4] >> (iqs / 16)) & 0x01010101) << 4;
++        const uint qh1 = ((a_q5_k_p32.data[ib].qh[qhi / 4 + 1] >> (iqs / 16)) & 0x01010101) << 4;
++        const vec4 q0 = vec4(unpack8(qs0 | qh0));
++        const vec4 q1 = vec4(unpack8(qs1 | qh1));
++
++        store_a(col, k_pair, FLOAT_TYPEV2(fma(d, q0.x, m), fma(d, q0.y, m)));
++        store_a(col, k_pair + 1, FLOAT_TYPEV2(fma(d, q0.z, m), fma(d, q0.w, m)));
++        store_a(col, k_pair + 2, FLOAT_TYPEV2(fma(d, q1.x, m), fma(d, q1.y, m)));
++        store_a(col, k_pair + 3, FLOAT_TYPEV2(fma(d, q1.z, m), fma(d, q1.w, m)));
+     } else if (MmTypeA == GGML_TYPE_Q6_K) {
+         const uint idx = pos_a + col * p.stride_a / mm_load_vec_a() + row;
+         const uint k_pair = row * mm_load_vec_a() / 2;
+ 
+-        const uint ib = idx / 128;                  // 2 values per idx
+-        const uint iqs = idx % 128;                 // 0..127
++        const uint ib = idx / 64;                   // 4 values per idx, one scale and bit plane
++        const uint iqs = (idx % 64) * 2;            // 0,2,4..126
+ 
+         const uint n = iqs / 64;                    // 0,1
+         const uint b = ((iqs % 64) / 32) * 4;       // 0,4
+         const uint is_b = (iqs % 16) / 8;           // 0,1
+         const uint qhshift = ((iqs % 64) / 16) * 2; // 0,2,4,6
+         const uint is = 8 * n + qhshift + is_b;     // 0..15
+-        const uint qsi = n * 32 + (iqs % 32);       // 0..63
+-        const uint qhi = n * 16 + (iqs % 16);       // 0..31
++        const uint qsi = n * 32 + (iqs % 32);       // 0,2..62
++        const uint qhi = n * 16 + (iqs % 16);       // 0,2..30
+ 
+         const float dscale = float(a_q6_k.data[ib].d) * float(a_q6_k.data[ib].scales[is]);
+ 
+-        const uint ql = (uint(a_q6_k_p16.data[ib].ql[qsi]) >> b) & 0x0F0F;
+-        const uint qh = (uint(a_q6_k_p16.data[ib].qh[qhi]) >> qhshift) & 0x0303;
+-        const vec2 q = (vec2(unpack8(ql | (qh << 4)).xy) - 32) * dscale;
++        const uint ql = ((uint(a_q6_k_p16.data[ib].ql[qsi]) | (uint(a_q6_k_p16.data[ib].ql[qsi + 1]) << 16)) >> b) & 0x0F0F0F0F;
++        const uint qh = ((uint(a_q6_k_p16.data[ib].qh[qhi]) | (uint(a_q6_k_p16.data[ib].qh[qhi + 1]) << 16)) >> qhshift) & 0x03030303;
++        const vec4 q = (vec4(unpack8(ql | (qh << 4))) - 32) * dscale;
+ 
+-        store_a(col, k_pair, FLOAT_TYPEV2(q.x, q.y));
++        store_a(col, k_pair, FLOAT_TYPEV2(q.xy));
++        store_a(col, k_pair + 1, FLOAT_TYPEV2(q.zw));
+     } else if (MmTypeA == GGML_TYPE_TQ1_0) {
+         const uint idx = pos_a + col * p.stride_a / mm_load_vec_a() + row;
+ 
+@@ -636,7 +663,7 @@ void load_b_to_shmem(const uint pos_b, const uint row, const uint col, const uin
+     if (ALIGNED != 0) {
+         // Not supported for b_type bf16 because bf16mat2x4 does not exist
+         const uint idx = pos_b + col * p.stride_b / LOAD_VEC_B + row;
+-        const uint buf_idx = col * SHMEM_STRIDE + row * LOAD_VEC_B / 2;
++        const uint buf_idx = buf_b_store_base + col * SHMEM_STRIDE + row * LOAD_VEC_B / 2;
+         FLOAT_TYPEV8 bb = FLOAT_TYPEV8(data_b[idx]);
+         buf_b[buf_idx + 0] = bb[0].xy;
+         buf_b[buf_idx + 1] = bb[0].zw;
+@@ -647,7 +674,7 @@ void load_b_to_shmem(const uint pos_b, const uint row, const uint col, const uin
+ #elif LOAD_VEC_B == 4
+     if (ALIGNED != 0) {
+         const uint idx = pos_b + col * p.stride_b / LOAD_VEC_B + row;
+-        const uint buf_idx = col * SHMEM_STRIDE + row * LOAD_VEC_B / 2;
++        const uint buf_idx = buf_b_store_base + col * SHMEM_STRIDE + row * LOAD_VEC_B / 2;
+ #if defined(DATA_B_BF16)
+         FLOAT_TYPEV4 bb = FLOAT_TYPEV4(TO_FLOAT_TYPE(data_b[idx]));
+ #else
+@@ -659,7 +686,7 @@ void load_b_to_shmem(const uint pos_b, const uint row, const uint col, const uin
+     }
+ #endif
+     const uint idx = pos_b + col * p.stride_b + row * 2;
+-    const uint buf_idx = col * SHMEM_STRIDE + row;
++    const uint buf_idx = buf_b_store_base + col * SHMEM_STRIDE + row;
+     if (idx_n < p.N && block + row * 2 + 1 < end_k) {
+         buf_b[buf_idx] = FLOAT_TYPEV2(TO_FLOAT_TYPE(data_b_scalar[idx]),
+                                         TO_FLOAT_TYPE(data_b_scalar[idx + 1]));
+diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp b/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
+index 30fe088..0c5a6bf 100644
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
+@@ -251,7 +251,8 @@ bool is_lut_quant(const std::string& type_name) {
+ }
+ 
+ std::string lut_load_vec_a(const std::string& type_name) {
+-    if (type_name == "iq1_s" || type_name == "iq1_m" || type_name == "iq2_xxs" || type_name == "iq2_xs" || type_name == "iq2_s") {
++    if (type_name == "iq1_s" || type_name == "iq1_m" || type_name == "iq2_xxs" || type_name == "iq2_xs" || type_name == "iq2_s" ||
++        type_name == "iq3_xxs" || type_name == "iq3_s" || type_name == "iq4_xs") {
+         return "8";
+     }
+     return "4";
