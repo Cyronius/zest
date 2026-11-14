@@ -316,5 +316,37 @@
       ]
     },
     "conclusion": "ROCm needs no patch and beats the release Vulkan backend (385 against about 322 through the server), but the patched Vulkan backend is about 18% faster still"
+  },
+  "llama_cpp_master_comparison": {
+    "build": "llama.cpp master 3549c27 (2026-11-14), unpatched, same flags",
+    "pp2769_ub256": [
+      381.62,
+      367.31
+    ],
+    "per_op_vs_b10944_release_ub256_ms": {
+      "matmul": [
+        7087.9,
+        6739.5
+      ],
+      "rms_norm_and_fused": [
+        138.6,
+        82.2
+      ],
+      "concat": [
+        87.1,
+        48.8
+      ],
+      "flash_attn": [
+        134.6,
+        159.1
+      ]
+    },
+    "matmul_tflops_4096x512x14336": {
+      "q4_0": 23.33,
+      "q3_K": 18.62,
+      "q4_K": 20.79,
+      "iq3_s": 18.12
+    },
+    "conclusion": "master's gains over b10944 are a ~5% faster matmul (its new int8 coopmat path and other changes) and under 1% from fused norms; the patched b10944 matmul is well ahead, so porting the patch to master would add about 1% here. The patch does not apply to master as is (all four files changed)"
   }
 }
