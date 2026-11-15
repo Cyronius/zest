@@ -9,9 +9,7 @@
 // It points llama.cpp at the add-on next to itself, asks llama.cpp
 // whether the NPU is usable, and if it is adds -dev XDNA0,Vulkan0 -ts 0,1
 // (and -ub 2048 -b 2048 for the programs people chat with). If it isn't, it adds
-// nothing, so llama.cpp runs on the GPU as usual, and says why. On Strix Halo's
-// Radeon 8060S or 8050S with Mesa's driver the GPU alone reads prompts faster than
-// with the NPU, so there it adds -dev Vulkan0 (and -ub 256 -b 2048 for chat). With no model
+// nothing, so llama.cpp runs on the GPU as usual, and says why. With no model
 // given, it lists the models it finds and asks which. What the user typed is
 // passed on exactly as typed, and anything they set themselves is kept.
 //
@@ -376,19 +374,8 @@ bool given(const std::vector<std::string> & args, std::initializer_list<const ch
 
 struct npu_check {
     bool usable = false;
-    std::string why;        // when not
-    std::string halo_gpu;   // "Vulkan0" and so on for a Strix Halo 8060S or 8050S on Mesa's driver, else empty
+    std::string why;  // when not
 };
-
-// A Vulkan device line of `--list-devices` naming a Radeon 8060S or 8050S on
-// Mesa's driver: "AMD Radeon 8060S Graphics (RADV STRIX_HALO)". Only that was
-// measured; AMD's Windows driver keeps the usual path. The 16-CU 8040S is left
-// out too: on Strix Point's 16-CU Radeon 890M the NPU made prompts faster.
-std::string find_halo_gpu(const std::string & out) {
-    static const std::regex line(R"(\n\s*(Vulkan[0-9]+): [^\n]*Radeon[^\n]* 80[56]0S[^\n]*RADV)");
-    std::smatch m;
-    return std::regex_search(out, m, line) ? m[1].str() : std::string();
-}
 
 // Asks llama.cpp for its devices, with the add-on loaded, and reads the
 // add-on's own line when it isn't offering the NPU.
@@ -398,16 +385,15 @@ npu_check check_npu(const fs::path & dir) {
     if (!is_file(lister)) return { false, std::string("no llama-server") + EXE + " next to zest" + EXE + " to ask" };
     std::string out;
     if (!list_devices(lister, out)) return { false, "couldn't start " + text(lister.filename()) };
-    const std::string halo = find_halo_gpu(out);
 
-    if (out.find("\n  XDNA0:") != std::string::npos) return { true, {}, halo };
+    if (out.find("\n  XDNA0:") != std::string::npos) return { true, {} };
     const std::string tag = "xdna: not offering XDNA0: ";
     const size_t at = out.find(tag);
     if (at != std::string::npos) {
         const size_t end = out.find_first_of("\r\n", at);
-        return { false, out.substr(at + tag.size(), end == std::string::npos ? std::string::npos : end - at - tag.size()), halo };
+        return { false, out.substr(at + tag.size(), end == std::string::npos ? std::string::npos : end - at - tag.size()) };
     }
-    return { false, "the add-on didn't load (GGML_BACKEND_PATH=" + env("GGML_BACKEND_PATH") + ")", halo };
+    return { false, "the add-on didn't load (GGML_BACKEND_PATH=" + env("GGML_BACKEND_PATH") + ")" };
 }
 
 //
@@ -582,11 +568,8 @@ void usage() {
         "\n"
         "It points llama.cpp at the NPU add-on next to it and, when the NPU can run, adds\n"
         "-dev XDNA0,Vulkan0 -ts 0,1 (plus -ub 2048 -b 2048 for llama-server, llama-cli\n"
-        "and llama-completion). On Strix Halo's Radeon 8060S or 8050S with Mesa's\n"
-        "driver, whose GPU reads prompts faster alone, it adds -dev Vulkan0 instead\n"
-        "(plus -ub 256 -b 2048).\n"
-        "With no model given, it lists the models it finds. Anything you set yourself\n"
-        "is kept.\n"
+        "and llama-completion). With no model given, it lists the models it finds.\n"
+        "Anything you set yourself is kept.\n"
         "\n"
         "zest's options, before the program's name:\n"
         "  --memory-gb N   the most memory the NPU's copies of the weights may take, in GB\n"
@@ -711,17 +694,7 @@ int launch(const std::vector<std::string> & argv) {
 
     if (takes_dev && !info && !given(args, { "-dev", "--device" }, { "LLAMA_ARG_DEVICE" })) {
         const npu_check c = check_npu(dir);
-        if (!c.halo_gpu.empty()) {
-            // Strix Halo: its GPU alone read prompts faster than with the NPU, and fastest
-            // in 256-token pieces, most likely because their activations fit its 32 MB cache
-            added = { "-dev", c.halo_gpu };
-            if (chat && !given(args, { "-b", "--batch-size", "-ub", "--ubatch-size" },
-                               { "LLAMA_ARG_BATCH", "LLAMA_ARG_UBATCH" }))
-                added.insert(added.end(), { "-ub", "256", "-b", "2048" });
-            std::string shown;
-            for (const std::string & a : added) shown += " " + a;
-            say("zest: prompts on the GPU, which is faster than the NPU on Strix Halo (added" + shown + ")");
-        } else if (c.usable) {
+        if (c.usable) {
             added = { "-dev", bench ? "XDNA0/Vulkan0" : "XDNA0,Vulkan0" };
             // No layers on XDNA0, as llama.cpp would pick anyway (it reports no
             // free memory). Said outright, it also stops llama.cpp's memory

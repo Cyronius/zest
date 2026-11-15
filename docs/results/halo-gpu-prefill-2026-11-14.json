@@ -248,7 +248,7 @@
     },
     "perplexity_final_build_ub256": 1.8734
   },
-  "npu": "Not used on Strix Halo: NPU-assisted prefill measured 221-255 tokens/s against 258-300 for the release GPU alone (halo-zest-qwen38-27b-2026-11-13.json), and the patched GPU is faster still. hipfire independently found no net gain from GPU+NPU co-op prefill on this chip.",
+  "npu": "NPU-assisted prefill measured 221-255 tokens/s against 258-300 for the release GPU alone (halo-zest-qwen38-27b-2026-11-13.json). This branch's GPU-only default and Vulkan patch were withdrawn on 2026-11-15 (kept on branch parked/halo-vulkan-prefill-2026-11-14): the NPU path is to be reworked instead. Correction: hipfire killed only a bit-exact dense-27B co-op design; it ships an NPU prefill route on Halo for its Flash-Next model, and yet-another-halo-engine's GPU+NPU output-column split prefills UD-IQ4_XS 1.18x faster than its GPU alone.",
   "explored_without_gain": [
     "f32 instead of f16 accumulation: removes 128 half-register copies per 32 matrix ops but measured a tie at -ub 256 (464 vs 465) and +1.6% at 2048",
     "other tile shapes for the producer kernel (256 consumers of 128x64, 64x128 per warp, 128 producers, 64x256 tiles): all within about 1% or slower",

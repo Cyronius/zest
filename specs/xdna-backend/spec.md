@@ -1011,13 +1011,6 @@ llama.cpp programs) shall run that program so that:
   `LLAMA_ARG_TENSOR_SPLIT`), and `-ub 2048 -b 2048` for llama-server,
   llama-cli and llama-completion. When it doesn't, nothing is added,
   llama.cpp runs on the GPU, and one line gives the add-on's reason;
-- when llama.cpp lists a Vulkan GPU named Radeon 8060S or 8050S (Strix
-  Halo) on Mesa's driver (RADV), that GPU is used alone whether or not
-  XDNA0 is offered:
-  `-dev <it>` is added (`Vulkan0` and so on), and `-ub 256 -b 2048` for
-  llama-server, llama-cli and llama-completion, with one line
-  `zest: prompts on the GPU, which is faster than the NPU on Strix Halo
-  (added ...)`. The 16-CU Radeon 8040S keeps the rule above;
 - with no model given (no `-m`, `-hf` and the like, nor their
   `LLAMA_ARG_*` variables) and a console to ask on, it lists the `.gguf`
   models in a `models` folder next to it, LM Studio's folder, llama.cpp's
@@ -1061,15 +1054,6 @@ environment into every model's server, so the option covers them all.
 The launcher is what makes "run it with nothing to set" true. It also
 avoids XDNA-SAFE-START's gap: a command naming XDNA0 when there isn't one.
 
-Why Strix Halo runs on the GPU alone: on the Radeon 8060S, Qwen3.8-27B's
-2,769-token prompt read at 194-255 tokens/s with the NPU's help against
-258-300 for the GPU alone (2026-11-13), and 450 for the GPU alone at
-`-ub 256` with the patched Vulkan backend (2026-11-14). `-ub 256` beat 512,
-1,024 and 2,048 on 2,769- and 8,192-token prompts with that backend and was
-no slower than 512 with the release's (354 against 348). The 8050S (32 CUs)
-is included untested; the 8040S has as many CUs (16) as Strix Point's 890M, where
-the NPU helps.
-
 `-ts 0,1` gives XDNA0 no layers, which is what llama.cpp picks anyway (it
 splits layers by free memory, and XDNA0 reports none). Said outright, it
 stops llama.cpp's memory fitting (`common/fit.cpp`) after the context size
@@ -1089,10 +1073,6 @@ while loading (2026-10-02). llama-bench doesn't fit unless asked.
   -ub 2048 -b 2048)`, and the 24 tokens match the GPU's.
 - The same with `GGML_XDNA_KERNELS` naming nothing: prints
   `zest: running on the GPU only: ...` and runs.
-- `tests/launcher-halo.sh` (ctest `launcher-halo`, Linux): with a stand-in
-  llama-server listing a Radeon 8060S or 8050S, `-dev Vulkan0 -ub 256
-  -b 2048` is added; `-ub` or `-dev` given by the user is kept; a Radeon
-  8040S, or an 8060S on AMD's Windows driver, gets nothing added.
 - With `-dev Vulkan0`: nothing added. With `-ub 512`: only `-dev` and
   `-ts` added. With `-ts 1,1`: no `-ts` added. `zest llama-bench`:
   `-dev XDNA0/Vulkan0` only.

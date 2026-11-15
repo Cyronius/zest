@@ -267,9 +267,3 @@ set_tests_properties(launcher-devices launcher-npu-devices PROPERTIES
     ENVIRONMENT "GGML_BACKEND_PATH=;GGML_XDNA_KERNELS="
     PASS_REGULAR_EXPRESSION "Vulkan0:"
 )
-
-# zest on Strix Halo's GPUs, against a stand-in llama-server
-if(NOT WIN32)
-    add_test(NAME launcher-halo COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/launcher-halo.sh" "$<TARGET_FILE:zest>")
-    set_tests_properties(launcher-halo PROPERTIES LABELS host)
-endif()

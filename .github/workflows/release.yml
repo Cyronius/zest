@@ -101,19 +101,6 @@ jobs:
           GGML_XDNA_PINNED: "0"
         run: ./build.sh
 
-      # The faster Vulkan backend (tools/build-vulkan.sh). It needs a glslc with cooperative matrices, which
-      # Ubuntu 22.04 lacks, so it uses the Vulkan SDK's. If it fails, package.sh keeps llama.cpp's own.
-      - name: Patched Vulkan backend
-        continue-on-error: true
-        run: |
-          sdk=1.4.335.0
-          curl --fail --location --retry 3 --silent --show-error \
-            "https://sdk.lunarg.com/sdk/download/$sdk/linux/vulkansdk-linux-x86_64-$sdk.tar.xz" -o "$RUNNER_TEMP/vulkansdk.tar.xz"
-          mkdir -p "$RUNNER_TEMP/vulkansdk"
-          tar -xJf "$RUNNER_TEMP/vulkansdk.tar.xz" -C "$RUNNER_TEMP/vulkansdk"
-          VULKAN_SDK=$(echo "$RUNNER_TEMP"/vulkansdk/*/x86_64)
-          PATH="$VULKAN_SDK/bin:$PATH" VULKAN_PREFIX="$VULKAN_SDK" tools/build-vulkan.sh
-
       - name: Package
         id: package
         run: |
