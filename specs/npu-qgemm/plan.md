@@ -139,6 +139,33 @@ about ¾ of today's speed. The order is therefore:
    the stalls.
 3. **Quantized weights unpacked on the NPU** (Phases 1-3 below).
 
+### Step 1 results (2026-11-15)
+
+- **Flat multiply loop, shipped.** `mm_paired` in `mm_bfp_acc.cc` now runs
+  the 2×2 blocks in one loop: persistent A/B streams moved by 2-D seeks,
+  K steps fully unrolled, separate `__restrict` C pointers. Bit-identical.
+  One core: 2,579 → 2,496 cycles per chunk. Whole GEMM at the 27B's shapes:
+  **12.1 → 13.3 TFLOPS (+9%)**.
+- **The limit is C, not the schedule.** Every 64-value K chunk reloads the
+  fp32 running sums into accumulators, and a 2×2 block's four accumulators
+  fill the core's ~5 accumulator registers, so the next block's sums can't be
+  loaded ahead (the compiler even spills one). Starting chains from zero and
+  adding C afterwards spills more (31%). bf16 sums would reach artlite's
+  ~97%, but in a host simulation they add ~1.06% error on top of BFP16's
+  0.97% at K = 5,120: ruled out.
+- **Longer K chunks help the core, not yet the GEMM.** One core reaches 59%
+  of the peak at m = 64, k = 128, n = 64 (72% at k = 256, which doesn't fit
+  local memory double-buffered). In the whole GEMM that tile ran at **10.2
+  TFLOPS**: cores busy ~30% of the time, waiting on data, while DRAM moved 35
+  of 46.5 GB/s and no channel passed 3.5 GB/s. Its smaller row blocks double
+  the transfers and the C-drain waits in the runtime sequence. It goes back on
+  the shelf until step 2 fixes data movement; `build-linux.sh` builds it with
+  `TILE_M=64 TILE_K=128` (RTP words then at `0xe000`/`0xe004`, shim placement
+  unchanged).
+
+Step 2 is now the bigger lever: at the shipped tile the cores are busy about
+55% of the GEMM's time, at the 64×128×64 tile about 30%.
+
 ### Which weights get which copy
 
 BFP16 copies stay wherever they fit; quantized copies are for the rest.

@@ -5,6 +5,9 @@
 # IRON_ENV points to a Python venv with mlir_aie 1.4.3 and Peano installed;
 # MLIR_AIE_ROOT points to the matching mlir-aie checkout. Their defaults are
 # the ignored local development copies under third_party/.
+# The core tile is m x k x n = 128 x 64 x 64 (src/npu/bfp16_pack.h's
+# bfp16_tiling and src/npu/bfp16_insts.cpp must match it); TILE_M, TILE_K and
+# TILE_N build another, for measurements.
 # Usage: build-linux.sh M K N [out-mode]
 set -euo pipefail
 
@@ -28,8 +31,10 @@ if [[ ! -f $iron_env/bin/activate || ! -f $mlir_aie_root/utils/env_setup.sh ]]; 
     exit 2
 fi
 
+tm=${TILE_M:-128} tk=${TILE_K:-64} tn=${TILE_N:-64}
 shape="${M}x${K}x${N}"
 if (( mode != 0 )); then shape="${shape}_m${mode}"; fi
+if [[ $tm/$tk/$tn != 128/64/64 ]]; then shape="${shape}_t${tm}x${tk}x${tn}"; fi
 out="$here/build/$shape"
 mkdir -p -- "$out"
 rm -rf -- "$out/final.prj"
@@ -41,6 +46,6 @@ source "$mlir_aie_root/utils/env_setup.sh"
 set -u
 export BFP_KFLAGS=''
 python "$here/designs/whole_array_bfp_rtp.py" -d npu2 --n-aie-cols 8 \
-    -M "$M" -K "$K" -N "$N" -m 128 -k 64 -n 64 --c-tiled --out-mode "$mode" \
+    -M "$M" -K "$K" -N "$N" -m "$tm" -k "$tk" -n "$tn" --c-tiled --out-mode "$mode" \
     --xclbin-path "$out/final.xclbin" --insts-path "$out/insts.bin"
 echo "BUILD_OK $shape -> $out"

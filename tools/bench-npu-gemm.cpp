@@ -2,10 +2,10 @@
 // each time against the math it does and the DRAM bytes it moves.
 //
 // The kernel (kernels/bfp16_gemm/designs/whole_array_bfp_rtp.py) streams A
-// once per 512 output columns (N / (n * cols)) and B once per 512 rows
-// (M / (m * rows)), each 9 bytes per 8 values; C is written once, 4 bytes a
-// value (mode 0) or 2 (modes 1, 2). So a GEMM moves
-//   A: M*K*9/8 * N/512   B: N*K*9/8 * M/512   C: M*N*(4 or 2)
+// once per n * cols output columns and B once per m * rows rows, each 9 bytes
+// per 8 values; C is written once, 4 bytes a value (mode 0) or 2 (modes 1,
+// 2). So a GEMM moves
+//   A: M*K*9/8 * N/(n*cols)   B: N*K*9/8 * M/(m*rows)   C: M*N*(4 or 2)
 // and its time is bounded by the larger of that over the NPU's bandwidth and
 // its math over the array's rate.
 //
@@ -73,8 +73,8 @@ int main(int argc, char ** argv) {
         std::sort(t.begin(), t.end());
         const double ms = t[t.size() / 2];
         const double flop = 2.0 * M * s.K * s.N;
-        const double a_mb = M * s.K * 9.0 / 8 * (s.N / 512) / 1e6;
-        const double b_mb = s.N * s.K * 9.0 / 8 * (M / 512) / 1e6;
+        const double a_mb = M * s.K * 9.0 / 8 * (s.N / (tile.n * tile.cols)) / 1e6;
+        const double b_mb = s.N * s.K * 9.0 / 8 * ((double) M / (tile.m * tile.rows)) / 1e6;
         const double c_mb = M * (double) s.N * (s.mode == 0 ? 4 : 2) / 1e6;
         const double mb = a_mb + b_mb + c_mb;
         printf("%-14s %6lld %6lld %4d %8.2f %8.2f %8.0f %8.1f %7.0f%%\n", s.name, (long long) s.K, (long long) s.N, s.mode,

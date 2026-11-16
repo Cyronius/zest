@@ -11,7 +11,7 @@
 //   bf16: bf16_first(A,B,C)  bf16_mid(A,B,C)                      C is bf16
 //
 // A and B arrive pair-interleaved (see src/npu/bfp16_pack.h):
-// one block stream per operand, inner loop unrolled by 2. C blocks are 8x8,
+// one block stream per operand (see mm_paired). C blocks are 8x8,
 // block (z, j) at element (z * n/8 + j) * 64, each block row-major (the layout
 // whole_array_mixed's C path untiles). Every accum -> bf16 conversion rounds
 // to nearest even.
@@ -40,62 +40,86 @@ using acc_t = aie::accum<accfloat, 64>;
 
 enum class Mode { First, Mid, Last };
 
+// One pass over the output tile in 2x2 blocks of 8x8 sub-blocks (rows z, z+1;
+// columns j, j+1), in one flat loop: band by band (16 rows), each band's
+// blocks left to right. The A and B streams persist across blocks and are
+// moved on by 2-D seeks; each block's K steps are fully unrolled; C is read
+// and written through separate pointers. That lets the scheduler overlap a
+// block's C loads and stores with its neighbours' MMULs: 59% of the MMUL peak
+// at m = 64, k = 128, n = 64, against 53% for a loop per band and per block
+// (2,579 -> 2,496 cycles per chunk at the old 128 x 64 x 64 tile). The MACs on
+// each accumulator are the same as before, in the same order, so the results
+// are bit-identical. Each block pops 2 k/8 panels per stream, a multiple of 8,
+// so a stream is drained exactly at every seek.
+//
+// With fp32 C, C itself is the limit: a block's four accumulators fill the
+// core's accumulator registers, so the next block's C can't be loaded ahead,
+// and every block pays its C loads. Longer K chunks (more MMULs per load) are
+// what helps: 59% of the peak at m = 64, k = 128, n = 64 on one core. In the
+// whole GEMM that tile lost (10.2 TFLOPS) to data movement, which must get
+// faster first (specs/npu-qgemm/plan.md).
+//
 // TC: type C is read from (ignored for First); TO: type written.
 template <Mode mode, typename TC, typename TO>
 __attribute__((always_inline)) inline void
 mm_paired(const bfp16ebs8 *__restrict pA, const bfp16ebs8 *__restrict pB,
-          const TC *pCin, TO *pCout) {
+          const TC *__restrict pCin, TO *__restrict pCout) {
   ::aie::set_rounding(::aie::rounding_mode::conv_even);
+  constexpr unsigned NJ = colB / 2;              // blocks per band
+  constexpr unsigned NB = (rowA / 2) * NJ;       // blocks
+  constexpr int PANELS = 2 * colA;               // panels a block pops per stream
+  static_assert(PANELS % 8 == 0);
 
-  AIE_LOOP_MIN_ITERATION_COUNT(2)
-  for (unsigned z = 0; z < rowA; z += 2) {
-    const TC *c1in = pCin + (z * colB) * 64;
-    const TC *c2in = pCin + ((z + 1) * colB) * 64;
-    TO *c1out = pCout + (z * colB) * 64;
-    TO *c2out = pCout + ((z + 1) * colB) * 64;
+  aie::block_vector_input_buffer_stream<bfp16ebs8, 64> sA(pA), sB(pB);
+  // After each block: A back to its band's start, except after the band's
+  // last block (on to the next band); B on to the next block's pair, except
+  // after the band's last block (back to the first).
+  dims_2d_t walkA(NJ - 1, -PANELS, 0);
+  dims_2d_t walkB(NJ - 1, 0, -(int)(PANELS * NJ));
+  unsigned c = 0;   // element offset of the block's first sub-block
+  unsigned jb = 0;  // the block's place in its band
 
-    for (unsigned j = 0; j < colB; j += 2) {
-      aie::block_vector_input_buffer_stream<bfp16ebs8, 64> sA(pA);
-      sA.seek(z * colA);
-      aie::block_vector_input_buffer_stream<bfp16ebs8, 64> sB(pB);
-      sB.seek(j * colA);
+  AIE_LOOP_MIN_ITERATION_COUNT(NB)
+  AIE_LOOP_MAX_ITERATION_COUNT(NB)
+  for (unsigned b = 0; b < NB; b++) {
+    const TC *__restrict l1 = pCin + c;
+    const TC *__restrict l2 = l1 + colB * 64;
+    TO *__restrict o1 = pCout + c;
+    TO *__restrict o2 = o1 + colB * 64;
 
-      acc_t c00, c01, c10, c11;
-      if constexpr (mode == Mode::First) {
-        c00 = aie::zeros<accfloat, 64>();
-        c01 = aie::zeros<accfloat, 64>();
-        c10 = aie::zeros<accfloat, 64>();
-        c11 = aie::zeros<accfloat, 64>();
-      } else {
-        c00 = acc_t(aie::load_v<64>(c1in));
-        c01 = acc_t(aie::load_v<64>(c1in + 64));
-        c10 = acc_t(aie::load_v<64>(c2in));
-        c11 = acc_t(aie::load_v<64>(c2in + 64));
-        c1in += 128;
-        c2in += 128;
-      }
-
-      aie::block_vector<bfp16ebs8, 64> A0, A1, B0, B1;
-      AIE_LOOP_MIN_ITERATION_COUNT(2)
-      AIE_LOOP_UNROLL(2)
-      for (unsigned i = 0; i < colA; ++i) {
-        A0 = sA.pop();
-        A1 = sA.pop();
-        B0 = sB.pop();
-        B1 = sB.pop();
-        c00 = mac_8x8_8x8T(A0, B0, c00);
-        c01 = mac_8x8_8x8T(A0, B1, c01);
-        c10 = mac_8x8_8x8T(A1, B0, c10);
-        c11 = mac_8x8_8x8T(A1, B1, c11);
-      }
-
-      aie::store_v(c1out, c00.template to_vector<TO>());
-      aie::store_v(c1out + 64, c01.template to_vector<TO>());
-      aie::store_v(c2out, c10.template to_vector<TO>());
-      aie::store_v(c2out + 64, c11.template to_vector<TO>());
-      c1out += 128;
-      c2out += 128;
+    acc_t c00, c01, c10, c11;
+    if constexpr (mode == Mode::First) {
+      c00 = aie::zeros<accfloat, 64>();
+      c01 = aie::zeros<accfloat, 64>();
+      c10 = aie::zeros<accfloat, 64>();
+      c11 = aie::zeros<accfloat, 64>();
+    } else {
+      c00 = acc_t(aie::load_v<64>(l1));
+      c01 = acc_t(aie::load_v<64>(l1 + 64));
+      c10 = acc_t(aie::load_v<64>(l2));
+      c11 = acc_t(aie::load_v<64>(l2 + 64));
     }
+
+    AIE_LOOP_UNROLL_FULL
+    for (unsigned i = 0; i < colA; ++i) {
+      const aie::block_vector<bfp16ebs8, 64> A0 = sA.pop(), A1 = sA.pop();
+      const aie::block_vector<bfp16ebs8, 64> B0 = sB.pop(), B1 = sB.pop();
+      c00 = mac_8x8_8x8T(A0, B0, c00);
+      c01 = mac_8x8_8x8T(A0, B1, c01);
+      c10 = mac_8x8_8x8T(A1, B0, c10);
+      c11 = mac_8x8_8x8T(A1, B1, c11);
+    }
+
+    aie::store_v(o1, c00.template to_vector<TO>());
+    aie::store_v(o1 + 64, c01.template to_vector<TO>());
+    aie::store_v(o2, c10.template to_vector<TO>());
+    aie::store_v(o2 + 64, c11.template to_vector<TO>());
+
+    sA.seek(walkA);
+    sB.seek(walkB);
+    const bool last = jb == NJ - 1;
+    c += last ? (colB + 2) * 64 : 128;
+    jb = last ? 0 : jb + 1;
   }
 }
 
