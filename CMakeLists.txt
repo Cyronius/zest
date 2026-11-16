@@ -165,6 +165,20 @@ if(GGML_XDNA_NPU)
         target_link_libraries(test-npu-wide PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
         add_dependencies(test-npu-wide ggml-zest-xrt)
 
+        # GEMM times at Qwen3.8-27B's shapes against math and bytes moved (not a test)
+        add_executable(bench-npu-gemm
+            tools/bench-npu-gemm.cpp
+            src/xdna-platform.cpp
+            src/npu/npu_bfp16.cpp
+            src/npu/bfp16_pack.cpp
+            src/npu/bfp16_insts.cpp
+            src/npu/xrt_load.cpp
+        )
+        target_include_directories(bench-npu-gemm PRIVATE src src/npu vendor/xrt-shim)
+        target_compile_options(bench-npu-gemm PRIVATE ${AVX2})
+        target_link_libraries(bench-npu-gemm PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+        add_dependencies(bench-npu-gemm ggml-zest-xrt)
+
         # One real GGUF projection split by output columns across Vulkan and
         # XDNA. Diagnostic benchmark only; it does not change inference.
         add_executable(bench-hybrid-projection tools/bench-hybrid-projection.cpp)
