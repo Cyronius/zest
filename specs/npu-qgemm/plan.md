@@ -150,9 +150,25 @@ about ¾ of today's speed. The order is therefore:
   fp32 running sums into accumulators, and a 2×2 block's four accumulators
   fill the core's ~5 accumulator registers, so the next block's sums can't be
   loaded ahead (the compiler even spills one). Starting chains from zero and
-  adding C afterwards spills more (31%). bf16 sums would reach artlite's
-  ~97%, but in a host simulation they add ~1.06% error on top of BFP16's
-  0.97% at K = 5,120: ruled out.
+  adding C afterwards spills more (31%).
+- **bf16 running sums: kept as an option** (`BF16_SUMS=1 build-linux.sh`,
+  design `--bf16-sums`; modes 1 and 2 only, mode 0 stays fp32). artlite ships
+  bf16 C. The host side is unchanged: bf16 sums at the tile's front are
+  already mode 1's output layout, and the toolchain's streams still match the
+  host's word for word. Measured 2026-11-16:
+  - one core, 128×64×64: **2,502 → 1,822 cycles per chunk (41% → 56% of
+    peak)**. At 64×128×64 no gain (1,734 vs 1,813). artlite's own MAC helper
+    compiles to the same 57-bundle, unpipelined loop here (the post-pipeliner
+    tries II 32–51 and fails on one latency edge), not its II 33.
+  - error (test-mul-mat, K = 2,048, vs fp64): NPU nrmse **0.87–0.90% →
+    1.04–1.11%**; the CPU's q8 activations give 0.54–0.70%. One case lands
+    just past the test's 2× CPU bar. More K chunks mean more roundings, so
+    K = 17,408 (`down`) will be worse; k = 128 chunks halve them. Model KL
+    not measured yet (GPU memory full).
+  - whole GEMM at the 27B's shapes, 6 alternating pairs: 57.0 ms vs 55.3 ms
+    with fp32 sums, no gain. The GEMM moves ~40 GB/s against ~46 GB/s
+    available under this load: it waits on DRAM, not on the cores. bf16 sums
+    pay off once traffic drops (quantized B, fewer A/B re-streams).
 - **Longer K chunks help the core, not yet the GEMM.** One core reaches 59%
   of the peak at m = 64, k = 128, n = 64 (72% at k = 256, which doesn't fit
   local memory double-buffered). In the whole GEMM that tile ran at **10.2

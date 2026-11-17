@@ -7,7 +7,8 @@
 # the ignored local development copies under third_party/.
 # The core tile is m x k x n = 128 x 64 x 64 (src/npu/bfp16_pack.h's
 # bfp16_tiling and src/npu/bfp16_insts.cpp must match it); TILE_M, TILE_K and
-# TILE_N build another, for measurements.
+# TILE_N build another, for measurements. BF16_SUMS=1 keeps bf16 running sums
+# in output modes 1 and 2 (designs/whole_array_bfp_rtp.py --bf16-sums).
 # Usage: build-linux.sh M K N [out-mode]
 set -euo pipefail
 
@@ -35,6 +36,8 @@ tm=${TILE_M:-128} tk=${TILE_K:-64} tn=${TILE_N:-64}
 shape="${M}x${K}x${N}"
 if (( mode != 0 )); then shape="${shape}_m${mode}"; fi
 if [[ $tm/$tk/$tn != 128/64/64 ]]; then shape="${shape}_t${tm}x${tk}x${tn}"; fi
+sums=()
+if [[ ${BF16_SUMS:-0} == 1 ]]; then shape="${shape}_s16"; sums=(--bf16-sums); fi
 out="$here/build/$shape"
 mkdir -p -- "$out"
 rm -rf -- "$out/final.prj"
@@ -46,6 +49,6 @@ source "$mlir_aie_root/utils/env_setup.sh"
 set -u
 export BFP_KFLAGS=''
 python "$here/designs/whole_array_bfp_rtp.py" -d npu2 --n-aie-cols 8 \
-    -M "$M" -K "$K" -N "$N" -m "$tm" -k "$tk" -n "$tn" --c-tiled --out-mode "$mode" \
+    -M "$M" -K "$K" -N "$N" -m "$tm" -k "$tk" -n "$tn" --c-tiled --out-mode "$mode" "${sums[@]}" \
     --xclbin-path "$out/final.xclbin" --insts-path "$out/insts.bin"
 echo "BUILD_OK $shape -> $out"

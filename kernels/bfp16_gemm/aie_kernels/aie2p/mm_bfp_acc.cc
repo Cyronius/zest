@@ -146,6 +146,30 @@ void mm_f32_last(bfp16ebs8 *pA, bfp16ebs8 *pB, float *__restrict pC,
 }
 #endif
 
+// bf16 running sums for the 16-bit output modes (whole_array_bfp_rtp.py
+// --bf16-sums): mode 0 keeps fp32 sums; modes 1 and 2 keep the tile's sums as
+// bf16 at its front, 8x8 block s at bf16 element s * 64, rounded to nearest
+// even after every K chunk. That is already mode 1's output layout
+// (out_epilogue), so mode 1 needs no epilogue, and mode 2's reads bf16. The
+// sums' rounding adds about as much error as bfp16's operands (specs/npu-qgemm).
+#ifdef SUMS_FIRST
+void mm_sums_first(bfp16ebs8 *pA, bfp16ebs8 *pB, float *pC, int32_t mode) {
+  if (mode == 0)
+    mm_paired<Mode::First, float, float>(pA, pB, pC, pC);
+  else
+    mm_paired<Mode::First, bfloat16, bfloat16>(pA, pB, (bfloat16 *)pC, (bfloat16 *)pC);
+}
+#endif
+
+#ifdef SUMS_MID
+void mm_sums_mid(bfp16ebs8 *pA, bfp16ebs8 *pB, float *pC, int32_t mode) {
+  if (mode == 0)
+    mm_paired<Mode::Mid, float, float>(pA, pB, pC, pC);
+  else
+    mm_paired<Mode::Mid, bfloat16, bfloat16>(pA, pB, (bfloat16 *)pC, (bfloat16 *)pC);
+}
+#endif
+
 #ifdef BF16_FIRST
 void mm_bf16_first(bfp16ebs8 *pA, bfp16ebs8 *pB, bfloat16 *pC) {
   mm_paired<Mode::First, bfloat16, bfloat16>(pA, pB, pC, pC);
@@ -295,6 +319,30 @@ extern "C" void out_epilogue(float *pC, int32_t mode) {
       const float *in = pC + s * 128;
       const vb lo = swiglu32(aie::load_v<32>(in), aie::load_v<32>(in + 64));
       const vb hi = swiglu32(aie::load_v<32>(in + 32), aie::load_v<32>(in + 96));
+      aie::store_v(pC + s * 32, lo.template cast_to<float>());
+      aie::store_v(pC + s * 32 + 16, hi.template cast_to<float>());
+    }
+  }
+}
+
+// out_epilogue for a tile from mm_sums_first / mm_sums_mid: mode 1 is
+// already done; mode 2 reads each pair's gate and up blocks as bf16 (bf16
+// element s * 128 on) and writes its 64 results at bf16 element s * 64,
+// behind what it has read.
+namespace {
+__attribute__((always_inline)) inline vf bf16_at(const float *p) {
+  return accb(aie::load_v<16>(p).template cast_to<bfloat16>()).template to_vector<float>();
+}
+} // namespace
+
+extern "C" void out_epilogue_sums(float *pC, int32_t mode) {
+  if (mode == 2) {
+    ::aie::set_rounding(::aie::rounding_mode::conv_even);
+    AIE_LOOP_MIN_ITERATION_COUNT(kTile / 128)
+    for (unsigned s = 0; s < kTile / 128; s++) {
+      const float *in = pC + s * 64;  // the pair's 128 bf16
+      const vb lo = swiglu32(bf16_at(in), bf16_at(in + 32));
+      const vb hi = swiglu32(bf16_at(in + 16), bf16_at(in + 48));
       aie::store_v(pC + s * 32, lo.template cast_to<float>());
       aie::store_v(pC + s * 32 + 16, hi.template cast_to<float>());
     }

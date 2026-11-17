@@ -74,6 +74,7 @@ def whole_array_matmul(
     b_groups: CompileTime[int] = 0,
     b_kfull: CompileTime[int] = 0,
     out_mode: CompileTime[int] = 0,
+    bf16_sums: CompileTime[bool] = False,
 ):
     acc = 33  # fp32 sums in the output tile, fp32 out
     c_depth = 1
@@ -118,9 +119,17 @@ def whole_array_matmul(
             compile_flags=kernel_flags + [f"-D{macro}"],
         )
 
-    k_first = _kern("mm_f32_first", "F32_FIRST", [A_l1_ty, B_l1_ty, C_l1_ty])
-    k_mid = _kern("mm_f32_mid", "F32_MID", [A_l1_ty, B_l1_ty, C_l1_ty])
-    k_out = _kern("out_epilogue", "OUT_EPILOGUE", [C_l1_ty, np.int32])
+    if bf16_sums:
+        # modes 1 and 2 keep bf16 running sums (mm_bfp_acc.cc, mm_sums_*);
+        # the kernels take the output mode
+        k_first = _kern("mm_sums_first", "SUMS_FIRST", [A_l1_ty, B_l1_ty, C_l1_ty, np.int32])
+        k_mid = _kern("mm_sums_mid", "SUMS_MID", [A_l1_ty, B_l1_ty, C_l1_ty, np.int32])
+        k_out = _kern("out_epilogue_sums", "OUT_EPILOGUE", [C_l1_ty, np.int32])
+    else:
+        k_first = _kern("mm_f32_first", "F32_FIRST", [A_l1_ty, B_l1_ty, C_l1_ty])
+        k_mid = _kern("mm_f32_mid", "F32_MID", [A_l1_ty, B_l1_ty, C_l1_ty])
+        k_out = _kern("out_epilogue", "OUT_EPILOGUE", [C_l1_ty, np.int32])
+    sums_args = (lambda mode: (mode,)) if bf16_sums else (lambda mode: ())
     assert out_mode in (0, 1, 2)
 
     A_l3l2_fifos: list[ObjectFifo] = []
@@ -181,11 +190,11 @@ def whole_array_matmul(
         # this dispatch's K/k - 1 and output mode
         n_mid = rtp[0]
         mode = rtp[1]
-        first(elem_in_a, elem_in_b, elem_out)
+        first(elem_in_a, elem_in_b, elem_out, *sums_args(mode))
         in_a.release(1)
         in_b.release(1)
         for _ in range_(n_mid):
-            _chunk(in_a, in_b, mid, elem_out)
+            _chunk(in_a, in_b, mid, elem_out, *sums_args(mode))
         epilogue(elem_out, mode)
         out_c.release(1)
 
@@ -395,6 +404,7 @@ def _make_argparser():
     p.add_argument("--b-groups", dest="b_groups", type=int, default=0)
     p.add_argument("--b-kfull", dest="b_kfull", type=int, default=0)
     p.add_argument("--out-mode", dest="out_mode", type=int, choices=[0, 1, 2], default=0)
+    p.add_argument("--bf16-sums", dest="bf16_sums", action="store_true")
 
     return p
 
@@ -412,6 +422,7 @@ def _compile_kwargs(opts):
         b_groups=opts.b_groups,
         b_kfull=opts.b_kfull,
         out_mode=opts.out_mode,
+        bf16_sums=opts.bf16_sums,
     )
 
 
