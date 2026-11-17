@@ -325,6 +325,14 @@ extern "C" void out_epilogue(float *pC, int32_t mode) {
   }
 }
 
+// out_epilogue for a bf16 C tile (whole_array_bfp_rtp.py --c16: mm_bf16_first
+// / mm_bf16_mid sums, the tile itself bf16): the same steps as
+// out_epilogue_sums.
+extern "C" void out_epilogue_sums(float *pC, int32_t mode);
+extern "C" void out_epilogue16(bfloat16 *pC, int32_t mode) {
+  out_epilogue_sums((float *)pC, mode);
+}
+
 // out_epilogue for a tile from mm_sums_first / mm_sums_mid: mode 1 is
 // already done; mode 2 reads each pair's gate and up blocks as bf16 (bf16
 // element s * 128 on) and writes its 64 results at bf16 element s * 64,

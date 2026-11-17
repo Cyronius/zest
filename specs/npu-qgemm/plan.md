@@ -179,8 +179,44 @@ about ¾ of today's speed. The order is therefore:
   `TILE_M=64 TILE_K=128` (RTP words then at `0xe000`/`0xe004`, shim placement
   unchanged).
 
-Step 2 is now the bigger lever: at the shipped tile the cores are busy about
-55% of the GEMM's time, at the 64×128×64 tile about 30%.
+### Step 2 results (2026-11-16): DRAM-bound, so weight bytes are the lever
+
+On a quieter machine the shipped GEMM runs at 20 TFLOPS (45 ms at the 27B's
+shapes, M = 1,024), and it is **bandwidth-bound**. Counting what really
+moves, its C tiles travel as whole fp32 tiles even in modes 1 and 2 (the bf16
+results are packed at the front, `bfp16_c16_row`), so six of the shapes (all
+but the fused gate/up) move ~1,390 MB in 27.0 ms: **~51 GB/s against ~57 GB/s
+available quiet**. The 64×128×64 tile lost for the same reason: its 256-row
+blocks re-stream B twice as often.
+
+Tried, all as `build-linux.sh` options, with toolchain streams:
+
+- **bf16 C** (`C16=1`, design `--c16`): bf16 sums in a bf16 tile carried as
+  half-width fp32 words, sent to DRAM as it is (each core tile in 8x8 block
+  order: the host would need a new reader and `bfp16_insts.cpp` the half C
+  sizes). 6% fewer bytes, **27.0 → 25.2 ms (−7%)**: time tracks bytes. But
+  bf16 sums **stall on long K**: with every chunk adding 64/4,096, `down`
+  (K = 17,408) stops at 4.0 instead of 4.25, because each addition is half a
+  bf16 step past 4.0. Real activations are noisier; the model's KL decides.
+- **Wide tile 128×32×128 with bf16 C** (`TILE_K=32 TILE_N=128 C16=1`): halves
+  A's re-streaming, but at k = 32 the core loop (47% of peak, 2,202 cycles per
+  chunk) becomes the limit: 25.4 ms, no better than bf16 C alone. k = 32 also
+  doubles the sums' roundings (host simulation: 2.9% nrmse at K = 17,408).
+- **fp32 sums, only the packed half sent to DRAM**: not expressible here. The
+  memtile can be told to send half of each core tile (`dims_to_stream`), but
+  the toolchain keeps the transfer length at the whole tile and the GEMM
+  hangs; a half-size output object needs a separate fp32 work buffer, which
+  does not fit beside A and B in a core's 64 KB.
+- **Fixed on the way:** the design's `--c-tiled` runtime sequence stopped
+  after two row groups (it counted `C_tiles`, one per tile group, against a
+  per-column index), so toolchain streams for M ≥ 2,048, or m = 64 at
+  M = 1,024, left half the rows unscheduled and hung. It now walks every row
+  group like `bfp16_insts.cpp`, and matches it word for word at M = 2,048.
+  The backend was never affected: it uses the host generator.
+
+So the remaining big lever is **B's bytes**, about 44% of the traffic: step 3,
+quantized weights, cuts them about in half at Q4_K and should take ~20% off the
+GEMM at today's bandwidth, more with bf16 C on top.
 
 ### Which weights get which copy
 

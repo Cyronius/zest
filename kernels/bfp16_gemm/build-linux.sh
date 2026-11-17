@@ -8,7 +8,9 @@
 # The core tile is m x k x n = 128 x 64 x 64 (src/npu/bfp16_pack.h's
 # bfp16_tiling and src/npu/bfp16_insts.cpp must match it); TILE_M, TILE_K and
 # TILE_N build another, for measurements. BF16_SUMS=1 keeps bf16 running sums
-# in output modes 1 and 2 (designs/whole_array_bfp_rtp.py --bf16-sums).
+# in output modes 1 and 2 (designs/whole_array_bfp_rtp.py --bf16-sums); C16=1
+# also keeps the tile itself bf16 and sends half the C bytes (--c16; the host
+# side does not read that layout yet).
 # Usage: build-linux.sh M K N [out-mode]
 set -euo pipefail
 
@@ -38,6 +40,7 @@ if (( mode != 0 )); then shape="${shape}_m${mode}"; fi
 if [[ $tm/$tk/$tn != 128/64/64 ]]; then shape="${shape}_t${tm}x${tk}x${tn}"; fi
 sums=()
 if [[ ${BF16_SUMS:-0} == 1 ]]; then shape="${shape}_s16"; sums=(--bf16-sums); fi
+if [[ ${C16:-0} == 1 ]]; then shape="${shape}_c16"; sums=(--bf16-sums --c16); fi
 out="$here/build/$shape"
 mkdir -p -- "$out"
 rm -rf -- "$out/final.prj"

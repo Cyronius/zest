@@ -75,10 +75,17 @@ def whole_array_matmul(
     b_kfull: CompileTime[int] = 0,
     out_mode: CompileTime[int] = 0,
     bf16_sums: CompileTime[bool] = False,
+    c16: CompileTime[bool] = False,
 ):
     acc = 33  # fp32 sums in the output tile, fp32 out
     c_depth = 1
     c_dt = np.float32
+    if c16:
+        # bf16 sums in a bf16 C tile, which travels as it is: output modes 1
+        # and 2 only, C half the bytes, in each core tile's 8x8 block order
+        assert bf16_sums and out_mode in (1, 2)
+    # C's width in 4-byte elements: with --c16 each carries two bf16
+    cw = n // 2 if c16 else n
     assert K // k >= 2
     n_aie_rows = 4
     n_aie_cores = n_aie_rows * n_aie_cols
@@ -101,10 +108,10 @@ def whole_array_matmul(
 
     A_l2_ty = np.ndarray[(m * k // 8 * n_A_tiles_per_shim,), np.dtype[v8bfp16ebs8]]
     B_l2_ty = np.ndarray[(k * n // 8,), np.dtype[v8bfp16ebs8]]
-    C_l2_ty = np.ndarray[(m * n * n_aie_rows,), np.dtype[c_dt]]
+    C_l2_ty = np.ndarray[(m * cw * n_aie_rows,), np.dtype[c_dt]]
     A_l1_ty = np.ndarray[(m, k // 8), np.dtype[v8bfp16ebs8]]
     B_l1_ty = np.ndarray[(k, n // 8), np.dtype[v8bfp16ebs8]]
-    C_l1_ty = np.ndarray[(m, n), np.dtype[c_dt]]
+    C_l1_ty = np.ndarray[(m, cw), np.dtype[c_dt]]
     Acc_ty = np.ndarray[(m * n,), np.dtype[np.float32]]
 
     kernel_flags = [f"-DDIM_M={m}", f"-DDIM_K={k}", f"-DDIM_N={n}"]
@@ -119,7 +126,11 @@ def whole_array_matmul(
             compile_flags=kernel_flags + [f"-D{macro}"],
         )
 
-    if bf16_sums:
+    if c16:
+        k_first = _kern("mm_bf16_first", "BF16_FIRST", [A_l1_ty, B_l1_ty, C_l1_ty])
+        k_mid = _kern("mm_bf16_mid", "BF16_MID", [A_l1_ty, B_l1_ty, C_l1_ty])
+        k_out = _kern("out_epilogue16", "OUT_EPILOGUE", [C_l1_ty, np.int32])
+    elif bf16_sums:
         # modes 1 and 2 keep bf16 running sums (mm_bfp_acc.cc, mm_sums_*);
         # the kernels take the output mode
         k_first = _kern("mm_sums_first", "SUMS_FIRST", [A_l1_ty, B_l1_ty, C_l1_ty, np.int32])
@@ -129,7 +140,7 @@ def whole_array_matmul(
         k_first = _kern("mm_f32_first", "F32_FIRST", [A_l1_ty, B_l1_ty, C_l1_ty])
         k_mid = _kern("mm_f32_mid", "F32_MID", [A_l1_ty, B_l1_ty, C_l1_ty])
         k_out = _kern("out_epilogue", "OUT_EPILOGUE", [C_l1_ty, np.int32])
-    sums_args = (lambda mode: (mode,)) if bf16_sums else (lambda mode: ())
+    sums_args = (lambda mode: (mode,)) if bf16_sums and not c16 else (lambda mode: ())
     assert out_mode in (0, 1, 2)
 
     A_l3l2_fifos: list[ObjectFifo] = []
@@ -161,11 +172,13 @@ def whole_array_matmul(
 
         # 8x8 blocks -> row-major on the way to DDR (from whole_array_mixed)
         c_l2l3_dims: StreamDims = [(m // r, r * n), (r, t), (n // t, r * t), (t, 1)]
+        if c16:
+            c_l2l3_dims = None  # each core tile in its own 8x8 block order
         c_l2l3 = ObjectFifo(
             C_l2_ty, name=f"C_L2L3_{col}", depth=fifo_depth, dims_to_stream=c_l2l3_dims
         )
         C_l2l3_fifos.append(c_l2l3)
-        of_offsets = [m * n * i for i in range(n_aie_rows)]
+        of_offsets = [m * cw * i for i in range(n_aie_rows)]
         c_tmp_fifos = c_l2l3.prod().join(
             of_offsets,
             obj_types=[C_l1_ty] * n_aie_rows,
@@ -235,7 +248,7 @@ def whole_array_matmul(
     # columns it reads come first. See B_tiles below.
     b_rows, b_cols = (b_groups or N), (b_kfull or K)
     B_ty = np.ndarray[(b_rows * b_cols // 8,), np.dtype[v8bfp16ebs8]]
-    C_ty = np.ndarray[(M * N,), np.dtype[c_dt]]
+    C_ty = np.ndarray[(M * N // n * cw,), np.dtype[c_dt]]
 
     tb_max_n_rows = 4
     # Local change: a C drain covering two row blocks strides m*4*N bf16 elements,
@@ -298,8 +311,8 @@ def whole_array_matmul(
             for c in range(n_aie_cols)
         ]
     C_tiles = TensorTiler2D.step_tiler(
-        (M, N),
-        (m * n_aie_rows, n),
+        (M, N // n * cw),
+        (m * n_aie_rows, cw),
         tile_group_repeats=(tb_n_rows, N // n // n_aie_cols),
         tile_group_steps=(1, n_aie_cols),
     )
@@ -312,7 +325,7 @@ def whole_array_matmul(
     # block by row block, then that column's N tiles (c, c+cols, ...) in
     # order, each block row-major. Changes only the runtime sequence, so the
     # insts.bin runs under the row-major build's xclbin.
-    c_blk = m * n_aie_rows * n
+    c_blk = m * n_aie_rows * cw
     c_per_rb = (N // n // n_aie_cols) * c_blk
 
     def sequence(a, b, c, A_prods, B_prods, C_conses):
@@ -326,9 +339,14 @@ def whole_array_matmul(
         tg = TaskGroup()
         for tb in range(iron.ceildiv(M // m // n_aie_rows, tb_max_n_rows)):
             for pingpong in [0, 1]:
-                if c_index >= len(C_tiles):
-                    break
                 row_base = tb * tb_max_n_rows + pingpong * tb_max_n_rows // 2
+                # (--c-tiled: every row group, as src/npu/bfp16_insts.cpp
+                # does; C_tiles counts tile groups, not columns, and stopped
+                # this loop early whenever there were more than two)
+                if c_tiled and row_base >= M // m // n_aie_rows:
+                    break
+                if not c_tiled and c_index >= len(C_tiles):
+                    break
                 current_tb_n_rows = min(
                     [tb_max_n_rows // 2, M // m // n_aie_rows - row_base]
                 )
@@ -336,8 +354,8 @@ def whole_array_matmul(
                     c_tap = C_tiles[c_index]
                     if c_tiled:
                         c_tap = _lin_tap(
-                            M * N,
-                            col * (M * N // n_aie_cols) + row_base * c_per_rb,
+                            M * N // n * cw,
+                            col * (M * N // n * cw // n_aie_cols) + row_base * c_per_rb,
                             current_tb_n_rows * c_per_rb,
                         )
                     C_conses[col].drain(
@@ -405,6 +423,7 @@ def _make_argparser():
     p.add_argument("--b-kfull", dest="b_kfull", type=int, default=0)
     p.add_argument("--out-mode", dest="out_mode", type=int, choices=[0, 1, 2], default=0)
     p.add_argument("--bf16-sums", dest="bf16_sums", action="store_true")
+    p.add_argument("--c16", dest="c16", action="store_true")
 
     return p
 
@@ -423,6 +442,7 @@ def _compile_kwargs(opts):
         b_kfull=opts.b_kfull,
         out_mode=opts.out_mode,
         bf16_sums=opts.bf16_sums,
+        c16=opts.c16,
     )
 
 
