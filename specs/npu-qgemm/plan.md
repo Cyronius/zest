@@ -305,11 +305,16 @@ zest's packing of ggml's dequantization **bit for bit** on all 512 rows of
   shifts; one loop over (row group, half) computing that group's scales in
   registers and then its four output vectors (a separate scale loop was 12%
   slower; unrolling further spilled).
-- Re-laid tile (prototype in Python for now; `src/npu/qtile_pack` next): per
+- Re-laid tile (`src/npu/qtile_pack.{h,cpp}`, 2026-11-17): per
   64 rows × one super-block, d and dmin as bf16 hi + lo (bit splits of the
   fp16 values, exact), the 6-bit scales and mins unpacked to bytes, then the
   nibbles of each 8-row × 8-value output vector together. 9,728 bytes for
-  9,216 of GGUF data (+5.6%): still half of BFP16's 18,432.
+  9,216 of GGUF data (+5.6%): still half of BFP16's 18,432. Byte for byte the
+  tiles the kernel was checked with; 2.4 GB/s on one thread (the 27B's Q4_K in
+  ~5 s, well under 1 s threaded). `tests/test-qtile-pack.cpp` checks its host
+  model of the kernel (`qtile_unpack_q4k`) against `bfp16_pack_b` of ggml's
+  `to_float`, on ggml-quantized rows and on raw blocks of random bytes
+  (negative, subnormal and zero scales, every nibble).
 - Output order: the unpacker emits vectors in the order the scales are
   shared ((row group, half, byte group)); the DMA to the multiplying cores
   reorders the 72-byte chunks into the B tile's order.

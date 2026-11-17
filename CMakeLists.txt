@@ -234,6 +234,17 @@ add_executable(test-bfp16-pack tests/test-bfp16-pack.cpp src/npu/bfp16_pack.cpp)
 target_include_directories(test-bfp16-pack PRIVATE src/npu)
 target_compile_options(test-bfp16-pack PRIVATE ${AVX2})
 
+# The Q4_K re-layout for the NPU's unpacker, against ggml's dequantization
+# (host code; runs next to the llama.cpp libraries for ggml).
+add_executable(test-qtile-pack tests/test-qtile-pack.cpp src/npu/qtile_pack.cpp src/npu/bfp16_pack.cpp)
+target_include_directories(test-qtile-pack PRIVATE src/npu "${GGML_HEADERS}/include")
+target_compile_definitions(test-qtile-pack PRIVATE GGML_SHARED GGML_BACKEND_SHARED)
+target_compile_options(test-qtile-pack PRIVATE ${AVX2})
+target_link_libraries(test-qtile-pack PRIVATE ${GGML_LIBS})
+add_custom_command(TARGET test-qtile-pack POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:test-qtile-pack> "${GGML_DIST}"
+)
+
 # ctest labels: "host" needs no NPU (the backend-facing ones do need a Vulkan
 # device), "npu" needs the NPU, "nodriver" expects a machine without the NPU
 # driver (CI).
@@ -241,6 +252,7 @@ file(TO_NATIVE_PATH "${GGML_DIST}/${XDNA_LIB}" XDNA_PATH)
 set(XDNA_ENV "GGML_BACKEND_PATH=${XDNA_PATH}" "GGML_XDNA_KERNELS=")
 add_test(NAME insts-gen COMMAND test-insts-gen)
 add_test(NAME bfp16-pack COMMAND test-bfp16-pack)
+add_test(NAME qtile-pack COMMAND "${GGML_DIST}/test-qtile-pack${EXE}")
 if(TARGET test-npu-wide)
     add_test(NAME npu-wide COMMAND test-npu-wide "${XDNA_XCLBIN}")
     set_tests_properties(npu-wide PROPERTIES LABELS npu)
@@ -268,7 +280,7 @@ set_tests_properties(memory-budget-npu PROPERTIES LABELS npu ENVIRONMENT "${XDNA
 # the host's small steps between NPU matmuls, against ggml's CPU backend
 add_test(NAME host-ops-host COMMAND "${GGML_DIST}/test-host-ops${EXE}")
 set_tests_properties(host-ops-host PROPERTIES LABELS host ENVIRONMENT "${XDNA_ENV};GGML_XDNA_HOST_ONLY=1")
-set_tests_properties(insts-gen bfp16-pack PROPERTIES LABELS host)
+set_tests_properties(insts-gen bfp16-pack qtile-pack PROPERTIES LABELS host)
 set_tests_properties(safe-start PROPERTIES LABELS host ENVIRONMENT "${XDNA_ENV}")
 set_tests_properties(safe-start-no-driver PROPERTIES LABELS nodriver ENVIRONMENT "${XDNA_ENV}")
 
