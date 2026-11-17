@@ -28,9 +28,11 @@
 constexpr size_t BFP16_BLOCK_BYTES = 9;
 
 // One block of eight: exponent byte = the largest of the eight float
-// exponents, mantissa q = round-to-nearest-even(x * 2^(133 - exponent)),
-// saturated to [-128, 127]. A value that rounds up to +128 saturates rather
-// than raising the exponent, which costs only that value.
+// exponents, mantissa q = round-to-nearest-even(x * 2^(133 - exponent)).
+// If a value rounds up to +128, the whole block is rounded again from x at
+// one exponent higher, as the NPU's own accumulator -> bfp16ebs8 conversion
+// does, so weights unpacked on the NPU equal these bit for bit
+// (specs/npu-qgemm/plan.md). -128 stays as it is.
 void bfp16_encode_block(const float * x, uint8_t * out);
 void bfp16_decode_block(const uint8_t * in, float * x);
 

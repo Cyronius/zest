@@ -91,26 +91,34 @@ Today a weight becomes `bfp16_encode_block(ggml to_float(row))`:
 - ggml dequantizes Q4_K in fp32 as `d·sc·q − dmin·m`. The products are
   exact; the subtraction rounds once.
 - The encoder takes the block's largest fp32 exponent `e` and rounds each
-  value to `rne(x·2^(133−e))`, saturated to [−128, 127].
+  value to `rne(x·2^(133−e))` (with the NPU's +128 rule, below).
 
-The AIE2P vector units multiply **fp16 × fp16 natively into fp32
-accumulators** (`aie_api/detail/aie2p/mul_acc32_fp.hpp`), and Q4_K's scales
-`d` and `dmin` are fp16. So the unpacker computes
+**Measured 2026-11-16, and how it is done instead.** XDNA2 has no fp16
+vectors (`aie_api`'s type table lists float16 only for AIE-MLv2, and
+`mul_acc32_fp` takes bf16 alone at this architecture), so the fp16 trick
+first planned here does not exist. Everything is bf16 × bf16 into fp32
+accumulators, which multiply exactly (8 × 8 bits) and add in IEEE fp32,
+round to nearest even:
 
-    w = d·(1024 + sc·q) − d·1024 − dmin·m
+    D1 = d·sc, M1 = dmin·m        exact (17 bits): d = dh + dl as two bf16,
+                                  sc and m as bf16 128 + v, then
+                                  dh·(128+sc) − 128·dh + dl·(128+sc) − 128·dl
+    D1 = p0 + p1 + p2             three bf16 pieces (round, subtract, twice)
+    w  = −128·D1 + Σ pᵢ·(128 + q) − M1
 
-- `sc·q ≤ 945`, so `1024 + sc·q` is an exact fp16 value, built with an
-  OR of the bits `0x6400 | sc·q`.
-- Each product is exact in fp32, and the first two terms cancel exactly.
-  The only rounding is the final subtraction, the same place ggml rounds.
+Every partial sum stays within 21 bits, so the sum is exact until the final
+subtraction of M1: the same single rounding as ggml's `d1·q − m1`. Small
+integers become bf16 128 + v by interleaving their bytes with 0x43 bytes. On
+the NPU this matched ggml bit for bit on 6,144 random lanes (about 160 per
+run needing rounding).
 
-If the accumulator rounds that sum once, round-to-nearest-even, and the
-hardware's accumulator → bfp16ebs8 conversion matches our encoder (largest
-exponent, round-to-nearest-even, saturate), the NPU's BFP16 weights equal
-today's bit for bit. Phase 1 tests both conditions first. If either fails,
-the fallback is to define the NPU's arithmetic as the reference: a host model
-of it, a bit-exact test against that model, and an accuracy check against
-ggml (max error per block, KL divergence on the model).
+The accumulator → bfp16ebs8 conversion matched `bfp16_encode_block` on
+every case but one: when a block's largest value rounds up to +128, the
+hardware does not saturate at 127, it rounds the whole block again from the
+original values one exponent up. `bfp16_encode_block` now does the same
+(src/npu/bfp16_pack.cpp, all paths; tests/test-bfp16-pack.cpp), which
+changes only those rare blocks; −128 stays as it was. After that, 512 of 512
+probe blocks matched, ties, spreads, zeros and the +128 case included.
 
 Q6_K (`d` fp16, int8 scales, 6-bit values) fits the same scheme. The IQ
 formats need table lookups: artlite's 16-wide lookups are the model.
@@ -280,6 +288,38 @@ GEMM. Report before Phase 2.
 
 **Stop point:** below about 2 weights per cycle, the dedicated-unpacking-core
 design needs rethinking before Phase 2.
+
+**Phase 1 results (2026-11-16): Q4_K, bit-exact, 2.4 weights per cycle.**
+`kernels/bfp16_gemm/aie_kernels/aie2p/dq_q4k.cc` turns one 64-row × 64-value
+k-tile of a re-laid Q4_K tile into the GEMM's B tile. On one core it equals
+zest's packing of ggml's dequantization **bit for bit** on all 512 rows of
+`blk.3.ffn_gate` (K = 5,120: 327,680 blocks) and 3 of 8 row groups of
+`blk.40.ffn_down` (K = 17,408: 417,792 blocks).
+
+- Speed: **1,683 cycles per k-tile (2.43 weights/cycle)**, from host timing
+  of 40 against 400 tiles (it agrees with the core's cycle counter, 1,656).
+  Below the 4/cycle target, which assumed a multiply loop near one MMUL per
+  cycle; today a multiplying core takes ~2,500 cycles per k-tile (~1,820 with
+  bf16 sums), so one unpacking core keeps its three multiplying cores fed.
+  Getting there: the bf16 arithmetic above; nibbles as `uint4` loads, no
+  shifts; one loop over (row group, half) computing that group's scales in
+  registers and then its four output vectors (a separate scale loop was 12%
+  slower; unrolling further spilled).
+- Re-laid tile (prototype in Python for now; `src/npu/qtile_pack` next): per
+  64 rows × one super-block, d and dmin as bf16 hi + lo (bit splits of the
+  fp16 values, exact), the 6-bit scales and mins unpacked to bytes, then the
+  nibbles of each 8-row × 8-value output vector together. 9,728 bytes for
+  9,216 of GGUF data (+5.6%): still half of BFP16's 18,432.
+- Output order: the unpacker emits vectors in the order the scales are
+  shared ((row group, half, byte group)); the DMA to the multiplying cores
+  reorders the 72-byte chunks into the B tile's order.
+- This file's Q4_K_M stores the attention projections as Q8_0 (288 tensors)
+  and the FFN as Q4_K (193). Q8_0 is 8.5 bits a weight against BFP16's 9, so
+  unpacking it on the NPU saves nothing; the FFN's Q4_K is where the bytes go.
+- Tooling notes: the pinned Peano cannot read the cycle counter
+  (`G_READCYCLECOUNTER` does not legalize), and the newer one asserts
+  (`AIE::Region`) on this kernel; `load_v` silently assumes alignment
+  (`load_unaligned_v` for row-group offsets, at most 1,024 bits).
 
 ### Phase 2: whole-array GEMM
 

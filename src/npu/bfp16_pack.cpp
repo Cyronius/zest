@@ -94,10 +94,14 @@ void bfp16_encode_block(const float * x, uint8_t * out) {
     m4 = _mm_max_epi32(m4, _mm_shuffle_epi32(m4, _MM_SHUFFLE(2, 3, 0, 1)));
     const int mx = _mm_cvtsi128_si32(m4);
     const int sexp = 133 - mx + 127;  // biased exponent of the scale
-    if (sexp >= 1 && sexp <= 254) {
+    if (sexp >= 2 && sexp <= 254) {
         out[0] = (uint8_t) mx;
-        const __m256  scale = _mm256_castsi256_ps(_mm256_set1_epi32(sexp << 23));
-        __m256i q = _mm256_cvtps_epi32(_mm256_mul_ps(v, scale));
+        __m256i q = _mm256_cvtps_epi32(_mm256_mul_ps(v, _mm256_castsi256_ps(_mm256_set1_epi32(sexp << 23))));
+        // A value that rounds up to +128: the block again, one exponent up
+        if (!_mm256_testz_si256(_mm256_cmpgt_epi32(q, _mm256_set1_epi32(127)), _mm256_set1_epi32(-1))) {
+            out[0] = (uint8_t) (mx + 1);
+            q = _mm256_cvtps_epi32(_mm256_mul_ps(v, _mm256_castsi256_ps(_mm256_set1_epi32((sexp - 1) << 23))));
+        }
         q = _mm256_min_epi32(_mm256_max_epi32(q, _mm256_set1_epi32(-128)), _mm256_set1_epi32(127));
         const __m128i q16 = _mm_packs_epi32(_mm256_castsi256_si128(q), _mm256_extracti128_si256(q, 1));
         _mm_storel_epi64((__m128i *) (out + 1), _mm_packs_epi16(q16, q16));
@@ -118,12 +122,20 @@ void bfp16_encode_block(const float * x, uint8_t * out) {
         memcpy(&u, &x[i], 4);
         maxe = std::max(maxe, (u >> 23) & 0xffu);
     }
-    out[0] = (uint8_t) maxe;
-    const int sh = 133 - (int) maxe;
+    int sh = 133 - (int) maxe;
+    float q[8];
+    bool over = false;
     for (int i = 0; i < 8; i++) {
-        const float q = std::nearbyint(std::ldexp(x[i], sh));
-        out[1 + i] = (uint8_t) (int8_t) std::min(127.0f, std::max(-128.0f, q));
+        q[i] = std::nearbyint(std::ldexp(x[i], sh));
+        over |= q[i] > 127.0f;
     }
+    if (over) {  // a value rounds up to +128: the block again, one exponent up
+        maxe++;
+        sh--;
+        for (int i = 0; i < 8; i++) q[i] = std::nearbyint(std::ldexp(x[i], sh));
+    }
+    out[0] = (uint8_t) maxe;
+    for (int i = 0; i < 8; i++) out[1 + i] = (uint8_t) (int8_t) std::min(127.0f, std::max(-128.0f, q[i]));
 }
 
 #if defined(__AVX2__) && defined(__GNUC__) && defined(__x86_64__)
@@ -143,7 +155,7 @@ static void bfp16_encode_pair_avx512(const float * x0, const float * x1, uint8_t
     };
     const int e0 = max_exp(v0), e1 = max_exp(v1);
     const int s0 = 133 - e0 + 127, s1 = 133 - e1 + 127;
-    if (s0 < 1 || s0 > 254 || s1 < 1 || s1 > 254) {
+    if (s0 < 2 || s0 > 254 || s1 < 2 || s1 > 254) {
         bfp16_encode_block(x0, out0);
         bfp16_encode_block(x1, out1);
         return;
@@ -151,6 +163,11 @@ static void bfp16_encode_pair_avx512(const float * x0, const float * x1, uint8_t
     const __m512 v = _mm512_insertf32x8(_mm512_castps256_ps512(v0), v1, 1);
     const __m512i scales = _mm512_mask_blend_epi32(0xff00, _mm512_set1_epi32(s0 << 23), _mm512_set1_epi32(s1 << 23));
     __m512i q = _mm512_cvtps_epi32(_mm512_mul_ps(v, _mm512_castsi512_ps(scales)));
+    if (_mm512_cmpgt_epi32_mask(q, _mm512_set1_epi32(127))) {  // a block steps its exponent up (rare)
+        bfp16_encode_block(x0, out0);
+        bfp16_encode_block(x1, out1);
+        return;
+    }
     q = _mm512_min_epi32(_mm512_max_epi32(q, _mm512_set1_epi32(-128)), _mm512_set1_epi32(127));
     const __m128i bytes = _mm512_cvtsepi32_epi8(q);
     out0[0] = (uint8_t) e0;

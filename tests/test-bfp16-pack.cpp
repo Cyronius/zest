@@ -17,7 +17,7 @@
 
 namespace ref {
 
-// ---- from kernels/bfp16_gemm/bench_bfp16.cpp, unchanged ---------------------
+// ---- from kernels/bfp16_gemm/bench_bfp16.cpp, with the NPU's +128 rule ------
 static std::vector<uint8_t> floatToBfp16Rne(int size, const float * x) {
     std::vector<uint8_t> r((size_t) size / 8 * 9);
     for (int b = 0; b < size / 8; b++) {
@@ -27,6 +27,12 @@ static std::vector<uint8_t> floatToBfp16Rne(int size, const float * x) {
             memcpy(&u, &x[b * 8 + i], 4);
             maxe = std::max(maxe, (u >> 23) & 0xFF);
         }
+        // a value that rounds up to +128: the block one exponent up
+        for (int i = 0; i < 8; i++)
+            if (std::nearbyint(std::ldexp((double) x[b * 8 + i], 133 - (int) maxe)) > 127.0) {
+                maxe++;
+                break;
+            }
         r[(size_t) b * 9] = (uint8_t) maxe;
         for (int i = 0; i < 8; i++) {
             double q = std::nearbyint(std::ldexp((double) x[b * 8 + i], 133 - (int) maxe));
@@ -73,7 +79,7 @@ static std::vector<uint8_t> linB(int N, int K, int n, int k, int cols, const std
 
 // Values spanning many exponents inside each block of eight, including the
 // cases that matter for rounding: exact zeros, ties, and maxima that round up
-// to +128 and must saturate.
+// to +128 and step the block's exponent up.
 static std::vector<float> make_data(size_t n, uint32_t seed) {
     std::mt19937 eng(seed);
     std::normal_distribution<float> nd(0.0f, 1.0f);
@@ -203,14 +209,24 @@ int main() {
         check(got == want, "fused gate/up row-wise packing preserves the eight-row interleave");
     }
 
-    // The saturation case on its own: a block whose maximum rounds up to +128.
+    // A block whose maximum rounds up to +128 (measured on the NPU's
+    // accumulator -> bfp16ebs8 conversion): rounded again from the values at
+    // exponent byte 128, so q = value * 32. Without it, -127.5 rounds to -128
+    // and 100.5 ties to even 100.
     {
         float blk[8] = { 127.75f, 1.0f, -3.5f, 0.0f, 64.0f, -127.5f, 0.25f, 100.5f };
         for (float & v : blk) v = std::ldexp(v, -6);  // exponent byte 127, so q = value * 64 before rounding
         uint8_t enc[9];
         bfp16_encode_block(blk, enc);
-        check(enc[0] == 127 && (int8_t) enc[1] == 127 && (int8_t) enc[6] == -128 && (int8_t) enc[8] == 100,
-              "a maximum that rounds up to +128 saturates at 127; -127.5 rounds to -128; 100.5 ties to even");
+        const int want[8] = { 64, 0, -2, 0, 32, -64, 0, 50 };
+        bool ok = enc[0] == 128;
+        for (int i = 0; i < 8; i++) ok = ok && (int8_t) enc[1 + i] == want[i];
+        check(ok, "a maximum that rounds up to +128 steps the exponent up and rounds the block again");
+        float neg[8] = { -127.75f, 1.0f, -3.5f, 0.0f, 64.0f, 2.5f, 0.25f, 100.5f };
+        for (float & v : neg) v = std::ldexp(v, -6);
+        bfp16_encode_block(neg, enc);
+        check(enc[0] == 127 && (int8_t) enc[1] == -128 && (int8_t) enc[6] == 2 && (int8_t) enc[8] == 100,
+              "-127.75 rounds to -128 at the same exponent; 2.5 and 100.5 tie to even");
     }
 
     // Decoding against plain arithmetic, every exponent byte, mantissas
