@@ -1,7 +1,6 @@
 """One core running dq_q4k (aie_kernels/aie2p/dq_q4k.cc) over NT re-laid Q4_K
 tiles: each tile (64 rows x one 256-value super-block, 9,728 bytes) becomes
-four 64 x 64 bfp16ebs8 B tiles, in the kernel's vector order
-(specs/npu-qgemm/plan.md, Phase 1). For checking the unpacker against the
+four 64 x 64 bfp16ebs8 B tiles (specs/npu-qgemm/plan.md, Phase 1). For checking the unpacker against the
 host packer and timing it (two tile counts, host clock).
 
     python dq_check.py --xclbin-path build/final.xclbin --insts-path build/insts.bin

@@ -57,7 +57,7 @@ constexpr int HDR = 0, SC = 512, MN = 1024, QS = 1536;
 } // namespace
 
 bool qtile_q4k_fits(int64_t N, int64_t K) {
-    return N > 0 && K > 0 && N % QTILE_ROWS == 0 && K % QTILE_K == 0;
+    return N > 0 && K > 0 && N % (QTILE_ROWS * QTILE_COLS) == 0 && K % QTILE_K == 0;
 }
 
 void qtile_pack_q4k_tile(const uint8_t * const * blocks, uint8_t * tile) {
@@ -93,7 +93,7 @@ void qtile_pack_q4k(const uint8_t * raw, size_t row_stride, int64_t N, int64_t K
         for (int64_t t = t0; t < t1; t++) {
             const int64_t rg = t / nsb, sb = t % nsb;
             for (int r = 0; r < 64; r++) blocks[r] = raw + (rg * 64 + r) * row_stride + sb * Q4K_BLOCK_BYTES;
-            qtile_pack_q4k_tile(blocks, out + t * QTILE_Q4K_BYTES);
+            qtile_pack_q4k_tile(blocks, out + qtile_index(rg, sb, N, K) * QTILE_Q4K_BYTES);
         }
     });
 }
@@ -110,8 +110,11 @@ void qtile_unpack_q4k(const uint8_t * tile, uint8_t * out) {
     const uint8_t * q = tile + QS;
     for (int j = 0; j < 4; j++)
         for (int n = 0; n < 64; n++, q += 32) {
-            const int g = n >> 3, hs = (n >> 2) & 1, s = 2 * j + hs;
-            uint8_t * dst = out + (size_t) j * 4608 + (size_t) n * 72;
+            // vector n = (g * 2 + hs) * 4 + x' of the nibbles, values
+            // 8x .. 8x + 7 (x = x' + 4 hs) of rows 8g ..: the B tile keeps
+            // it at chunk (g / 2) * 16 + x * 2 + g % 2
+            const int g = n >> 3, hs = (n >> 2) & 1, s = 2 * j + hs, x = (n & 3) + 4 * hs;
+            uint8_t * dst = out + (size_t) j * 4608 + (size_t) ((g >> 1) * 16 + x * 2 + (g & 1)) * 72;
             for (int i = 0; i < 8; i++) {  // one row's block
                 const int r = 8 * g + i;
                 const float d1 = d[r] * (float) tile[SC + s * 64 + r], m1 = dmin[r] * (float) tile[MN + s * 64 + r];

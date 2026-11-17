@@ -25,11 +25,10 @@
 //
 // Output order: a 64-lane vector is 8 rows x 8 consecutive values, which the
 // conversion turns into the 8 consecutive blocks (72 bytes) the B tile keeps
-// for them (bfp16_pack.h). Vectors go out in the order the scales are shared,
-// n = (g * 2 + hs) * 4 + x' (row group g, sub-block half hs, byte group x');
-// in the B tile, vector (g, x = x' + 4 hs) is chunk (g / 2) * 16 + x * 2 +
-// g % 2. The DMA between this core and the multiplying cores reorders the
-// 72-byte chunks.
+// for them (bfp16_pack.h). They are made in the order the scales are shared
+// (row group g, sub-block half hs, byte group x') and stored where the B tile
+// keeps vector (g, x = x' + 4 hs): chunk (g / 2) * 16 + x * 2 + g % 2, so
+// every other chunk, the stream skipping one after each store.
 //
 //===----------------------------------------------------------------------===//
 
@@ -68,6 +67,9 @@ __attribute__((always_inline)) inline vb plus128(aie::vector<uint8_t, 64> v) {
 } // namespace
 
 extern "C" void dq_q4k(const uint8_t *__restrict tile, bfp16ebs8 *__restrict out, uint8_t *__restrict scr, int32_t j) {
+#ifdef DQ_NOP  // (measurements: data movement alone)
+  return;
+#endif
   ::aie::set_rounding(::aie::rounding_mode::conv_even);
   scratch &S = *(scratch *)scr;
   const vb k128 = aie::broadcast<bfloat16, 64>(128.0f);
@@ -111,7 +113,11 @@ extern "C" void dq_q4k(const uint8_t *__restrict tile, bfp16ebs8 *__restrict out
     for (int x = 0; x < 4; x++) {
       const vb q1 = plus128(aie::load_v<64>((const uint4 *)(qs + gh * 128 + x * 32)).unpack());  // 128 + q
       const acc_t w = aie::mac(aie::mac(aie::mac(c0, q1, p0), q1, p1), q1, p2);
-      os.push(aie::sub(w, M1).to_vector<bfp16ebs8>());
+      // on two chunks; after a group's last vector, to the next group's first
+      // chunk: (g, 1)'s is (g, 0)'s + 8, (g + 1, 0)'s (g, 0)'s + 1 for g even
+      // and + 15 for g odd
+      const int skip = x < 3 || hs == 0 ? 1 : (g & 1) ? 0 : -14;
+      os.push_seek(aie::sub(w, M1).to_vector<bfp16ebs8>(), skip);
     }
   }
 }

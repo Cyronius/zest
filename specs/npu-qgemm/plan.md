@@ -315,9 +315,11 @@ zest's packing of ggml's dequantization **bit for bit** on all 512 rows of
   model of the kernel (`qtile_unpack_q4k`) against `bfp16_pack_b` of ggml's
   `to_float`, on ggml-quantized rows and on raw blocks of random bytes
   (negative, subnormal and zero scales, every nibble).
-- Output order: the unpacker emits vectors in the order the scales are
-  shared ((row group, half, byte group)); the DMA to the multiplying cores
-  reorders the 72-byte chunks into the B tile's order.
+- Output order: the unpacker makes vectors in the order the scales are
+  shared ((row group, half, byte group)) and stores each straight into its
+  B-tile chunk (`push_seek`, skipping every other chunk), so no DMA reorder
+  is needed (a core tile's DMA has too few dimensions for it). Bit-exact on
+  hardware as before.
 - This file's Q4_K_M stores the attention projections as Q8_0 (288 tensors)
   and the FFN as Q4_K (193). Q8_0 is 8.5 bits a weight against BFP16's 9, so
   unpacking it on the NPU saves nothing; the FFN's Q4_K is where the bytes go.
@@ -340,6 +342,30 @@ zest's packing of ggml's dequantization **bit for bit** on all 512 rows of
 **Exit:** for Q4_K and Q6_K weights at the 27B's shapes and output modes
 0/1/2, the output equals the BFP16 kernel's bit for bit (same BFP16 weights,
 same multiply kernel); per-GEMM time measured against the BFP16 kernel.
+
+**Phase 2 first results (2026-11-17): bit-exact, but compute-bound at 24
+multiplying cores.** `designs/whole_array_bfpq.py` (row 2 unpacks, rows 3-5
+multiply, one xclbin for every shape) gives the shipped BFP16 kernel's
+output bit for bit: 1536 x 1024 x 1024 in modes 0, 1 and 2, and the 27B's
+gate (1536 x 5120 x 17408) and down (1536 x 17408 x 5120) shapes in mode 0.
+The host lays the tiles out in the order the columns read them
+(`qtile_index`). Times, NPU shared with another process (min of 15 runs,
+interleaved):
+
+| shape (M x K x N)   | BFP16 (32 cores) | Q4_K (24 + 8) | Q4_K, no-op unpack | Q4_K, bf16 sums |
+|---------------------|------------------|---------------|--------------------|-----------------|
+| 1536 x 5120 x 17408 | 17.1 ms          | 19.5 ms       | 19.7 ms            | 17.1 ms (mode 1) |
+| 1536 x 17408 x 5120 | 11.7 ms          | 15.7 ms       |                    |                 |
+
+- The unpacker is not the limit (a no-op unpack is no faster).
+- Down is compute-bound in both: 261,120 k-tile products at ~2,500
+  cycles each is 11.4 ms on 32 cores and 15.2 ms on 24, as measured. Gate
+  moves more bytes (A is re-read for every 512 output columns: 300 MB, as
+  much as BFP16's weights), so BFP16 there is slower than its compute.
+- So with the multiply loop as it is, a quarter fewer multiplying cores
+  costs more than the halved weight bytes save. What the design does buy
+  today is memory: the weight copy at 9,728 bytes per 64 x 256 instead of
+  18,432.
 
 ### Phase 3: backend
 
