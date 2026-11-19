@@ -6,9 +6,9 @@
 // open_kernel adds it. Switching contexts costs about 2.4 ms on this NPU
 // against about 0.1 ms for a dispatch, so every shape runs as its own
 // instruction stream under its kernel's one xclbin (one xclbin serves any
-// size), and callers keep switches between kernels rare. Weights are packed once and stay resident in
-// their own buffers; each call packs nothing, it takes operands already in the
-// kernel's layout (bfp16_pack.h).
+// size), and callers keep switches between kernels rare. Weights are packed
+// once and stay resident in their own buffers; each call packs nothing, it
+// takes operands already in the kernel's layout (bfp16_pack.h).
 #pragma once
 
 #include "bfp16_pack.h"
@@ -32,9 +32,9 @@ public:
     int add_shape(const std::string & insts_path, int64_t M, int64_t K, int64_t N, std::string & err);
     // The same from the stream's words (bfp16_insts.h, bfpq_insts.h), for
     // kernel `kernel`, whose weight operand takes `b_bytes` (0: BFP16's
-    // N * K / 8 * 9).
+    // N * K / 8 * 9) and whose output takes `c_bytes` (0: M * N floats).
     int add_shape(const std::vector<uint32_t> & insts, int64_t M, int64_t K, int64_t N, std::string & err,
-                  int kernel = 0, size_t b_bytes = 0);
+                  int kernel = 0, size_t b_bytes = 0, size_t c_bytes = 0);
 
     // A weight operand already in the kernel's layout (bfp16_pack_b), copied
     // into its own device buffer. Returns its handle, or -1.
@@ -96,8 +96,13 @@ public:
         bool reserve(int n, size_t a_bytes, size_t b_bytes, size_t c_bytes, std::string & err);
         // Call i runs shapes[i]. With `b` (add_weights or add_buffer handles,
         // one for every call or one per call), a call's B is that buffer
-        // instead of its own; the caller keeps it synced.
-        bool prepare(const std::vector<int> & shapes, std::string & err, const std::vector<int> & b = {});
+        // instead of its own; the caller keeps it synced. With `a_from` (one
+        // per call, -1 for none), call i's A is call a_from[i]'s output, an
+        // earlier call whose shape writes it in A's layout (the BFP16
+        // kernel's output mode 3): the NPU runs the two back to back, and
+        // the host neither writes that A nor reads that output.
+        bool prepare(const std::vector<int> & shapes, std::string & err, const std::vector<int> & b = {},
+                     const std::vector<int> & a_from = {});
         // Sync back only the first `bytes` of each output (0: all of it), when
         // the rest is never read.
         void sync_c_prefix(size_t bytes) { c_prefix_ = bytes; }
@@ -118,6 +123,8 @@ public:
             uint8_t * a_map = nullptr, * b_map = nullptr, * c_map = nullptr;
             int shape = -1;
             int kernel = -1;  // the one `run` was made for
+            int a_from = -1;  // the call whose output is this one's A
+            bool feeds = false;  // its output is a later call's A
         };
         bool map(call & c, std::string & err);
         npu_bfp16 & npu_;
@@ -143,6 +150,8 @@ private:
         int     n_words = 0;
         int     kernel = 0;
         size_t  b_bytes = 0;  // the weight operand
+        size_t  c_bytes = 0;  // the output
+        size_t  a_bytes() const { return (size_t) (M * K / 8) * BFP16_BLOCK_BYTES; }
     };
     struct kernel {
         void * ctx = nullptr, * kern = nullptr, * run = nullptr;

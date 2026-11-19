@@ -5,16 +5,18 @@
 # IRON_ENV points to a Python venv with mlir_aie 1.4.3 and Peano installed;
 # MLIR_AIE_ROOT points to the matching mlir-aie checkout. Their defaults are
 # the ignored local development copies under third_party/.
-# The core tile is m x k x n = 128 x 64 x 64 (src/npu/bfp16_pack.h's
-# bfp16_tiling and src/npu/bfp16_insts.cpp must match it); TILE_M, TILE_K and
-# TILE_N build another, for measurements. BF16_SUMS=1 keeps bf16 running sums
-# in output modes 1 and 2 (designs/whole_array_bfp_rtp.py --bf16-sums); C16=1
-# also keeps the tile itself bf16 and sends half the C bytes (--c16; the host
-# side does not read that layout yet). DESIGN=q4k builds the GEMM on Q4_K
-# weights unpacked on the array instead (designs/whole_array_bfpq.py: M a
-# multiple of 384, K of 256; src/npu/bfpq_insts.cpp makes its streams), into
-# build/q4k_<shape>; FMT=1 gives its streams for B tiles copied through
-# (the xclbin is the same).
+# The design is designs/whole_array_bfp_colwise.py: core tile m x k x n =
+# 64 x 64 x 128, M a multiple of 512, N of 512, K of 64 (src/npu/bfp16_pack.h's
+# BFP16_TILE and src/npu/bfp16_insts.cpp must match it). One build's xclbin
+# serves every shape and output mode; the shape and mode given here only set
+# the instruction stream written beside it (tests/insts keeps some, to check
+# the host's streams against). TILE_M, TILE_K and TILE_N build another tile,
+# for measurements. BF16_SUMS=1 keeps bf16 running sums in output modes 1 to 3
+# (--bf16-sums). DESIGN=q4k builds the GEMM on Q4_K weights unpacked on the
+# array instead (designs/whole_array_bfpq.py: tile 128 x 64 x 64, M a multiple
+# of 384, K of 256; src/npu/bfpq_insts.cpp makes its streams), into
+# build/q4k_<shape>; FMT=1 gives its streams for B tiles copied through (the
+# xclbin is the same).
 # Usage: build-linux.sh M K N [out-mode]
 set -euo pipefail
 
@@ -24,13 +26,13 @@ iron_env=${IRON_ENV:-$root/third_party/ironenv}
 mlir_aie_root=${MLIR_AIE_ROOT:-$root/third_party/mlir-aie}
 
 if (( $# < 3 || $# > 4 )); then
-    echo "usage: $0 M K N [out-mode: 0, 1, or 2]" >&2
+    echo "usage: $0 M K N [out-mode: 0 to 3]" >&2
     exit 2
 fi
 M=$1 K=$2 N=$3 mode=${4:-0}
 set --  # env_setup.sh must see no inherited shape arguments
-if [[ ! $M =~ ^[1-9][0-9]*$ || ! $K =~ ^[1-9][0-9]*$ || ! $N =~ ^[1-9][0-9]*$ || ! $mode =~ ^[012]$ ]]; then
-    echo "M, K, N must be positive integers and out-mode must be 0, 1, or 2" >&2
+if [[ ! $M =~ ^[1-9][0-9]*$ || ! $K =~ ^[1-9][0-9]*$ || ! $N =~ ^[1-9][0-9]*$ || ! $mode =~ ^[0123]$ ]]; then
+    echo "M, K, N must be positive integers and out-mode must be 0 to 3" >&2
     exit 2
 fi
 if [[ ! -f $iron_env/bin/activate || ! -f $mlir_aie_root/utils/env_setup.sh ]]; then
@@ -38,19 +40,28 @@ if [[ ! -f $iron_env/bin/activate || ! -f $mlir_aie_root/utils/env_setup.sh ]]; 
     exit 2
 fi
 
-tm=${TILE_M:-128} tk=${TILE_K:-64} tn=${TILE_N:-64}
-shape="${M}x${K}x${N}"
-if (( mode != 0 )); then shape="${shape}_m${mode}"; fi
-if [[ $tm/$tk/$tn != 128/64/64 ]]; then shape="${shape}_t${tm}x${tk}x${tn}"; fi
-sums=()
-if [[ ${BF16_SUMS:-0} == 1 ]]; then shape="${shape}_s16"; sums=(--bf16-sums); fi
-if [[ ${C16:-0} == 1 ]]; then shape="${shape}_c16"; sums=(--bf16-sums --c16); fi
 design=${DESIGN:-bfp16}
-if [[ $design == q4k ]]; then
-    if [[ ${FMT:-0} == 1 ]]; then shape="qcopy_$shape"; else shape="q4k_$shape"; fi
-elif [[ $design != bfp16 ]]; then
+if [[ $design == bfp16 ]]; then
+    tm=${TILE_M:-64} tk=${TILE_K:-64} tn=${TILE_N:-128}
+    default_tile=64/64/128
+elif [[ $design == q4k ]]; then
+    tm=${TILE_M:-128} tk=${TILE_K:-64} tn=${TILE_N:-64}
+    default_tile=128/64/64
+    if [[ $tm/$tk/$tn != "$default_tile" || $mode == 3 ]]; then
+        echo "DESIGN=q4k has the 128 x 64 x 64 tile and output modes 0 to 2 only" >&2
+        exit 2
+    fi
+else
     echo "DESIGN must be bfp16 or q4k" >&2
     exit 2
+fi
+shape="${M}x${K}x${N}"
+if (( mode != 0 )); then shape="${shape}_m${mode}"; fi
+if [[ $tm/$tk/$tn != "$default_tile" ]]; then shape="${shape}_t${tm}x${tk}x${tn}"; fi
+sums=()
+if [[ ${BF16_SUMS:-0} == 1 ]]; then shape="${shape}_s16"; sums=(--bf16-sums); fi
+if [[ $design == q4k ]]; then
+    if [[ ${FMT:-0} == 1 ]]; then shape="qcopy_$shape"; else shape="q4k_$shape"; fi
 fi
 out="$here/build/$shape"
 mkdir -p -- "$out"
@@ -63,16 +74,14 @@ source "$mlir_aie_root/utils/env_setup.sh"
 set -u
 export BFP_KFLAGS=''
 if [[ $design == q4k ]]; then
-    if [[ $tm/$tk/$tn != 128/64/64 || ${C16:-0} == 1 ]]; then
-        echo "DESIGN=q4k has the 128 x 64 x 64 tile and fp32 C only" >&2
-        exit 2
-    fi
     python "$here/designs/whole_array_bfpq.py" -d npu2 \
         -M "$M" -K "$K" -N "$N" --out-mode "$mode" --fmt "${FMT:-0}" "${sums[@]}" \
         --xclbin-path "$out/final.xclbin" --insts-path "$out/insts.bin"
 else
-    python "$here/designs/whole_array_bfp_rtp.py" -d npu2 --n-aie-cols 8 \
-        -M "$M" -K "$K" -N "$N" -m "$tm" -k "$tk" -n "$tn" --c-tiled --out-mode "$mode" "${sums[@]}" \
+    python "$here/designs/whole_array_bfp_colwise.py" -d npu2 \
+        -M "$M" -K "$K" -N "$N" -m "$tm" -k "$tk" -n "$tn" --out-mode "$mode" "${sums[@]}" \
         --xclbin-path "$out/final.xclbin" --insts-path "$out/insts.bin"
+    # the streams' register writes and the host's streams assume a placement
+    python "$here/designs/check_placement.py" "$out/final.prj"
 fi
 echo "BUILD_OK $shape -> $out"

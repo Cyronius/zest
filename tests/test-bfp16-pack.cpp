@@ -104,11 +104,12 @@ int main() {
     };
 
     struct shape { int M, K, m, k; };
-    for (const shape s : { shape{ 512, 256, 128, 64 }, shape{ 256, 384, 64, 128 }, shape{ 1024, 6144, 128, 64 } }) {
+    for (const shape s : { shape{ 512, 256, 128, 64 }, shape{ 256, 384, 64, 128 }, shape{ 1024, 6144, 128, 64 },
+                           shape{ 512, 5120, 64, 64 } }) {
         const std::vector<float> x = make_data((size_t) s.M * s.K, 1 + s.M + s.K);
         const std::vector<uint8_t> want = ref::linA(s.M, s.K, s.m, s.k, ref::floatToBfp16Rne(s.M * s.K, x.data()));
         std::vector<uint8_t> got;
-        bfp16_tiling t;
+        bfp16_tiling t = BFP16_TILE;
         t.m = s.m; t.k = s.k;
         bfp16_pack_a(x.data(), s.M, s.K, t, got, 8);
         char what[128];
@@ -146,11 +147,11 @@ int main() {
 
     struct wshape { int N, K, n, k, cols; };
     for (const wshape s : { wshape{ 1024, 256, 64, 64, 8 }, wshape{ 4096, 2048, 64, 64, 8 }, wshape{ 2048, 6144, 64, 128, 8 },
-                            wshape{ 512, 128, 32, 64, 4 } }) {
+                            wshape{ 512, 128, 32, 64, 4 }, wshape{ 2048, 1024, 128, 64, 4 } }) {
         const std::vector<float> w = make_data((size_t) s.N * s.K, 7 + s.N + s.K);
         const std::vector<uint8_t> want = ref::linB(s.N, s.K, s.n, s.k, s.cols, ref::floatToBfp16Rne(s.N * s.K, w.data()));
         std::vector<uint8_t> got;
-        bfp16_tiling t;
+        bfp16_tiling t = BFP16_TILE;
         t.n = s.n; t.k = s.k; t.cols = s.cols;
         bfp16_pack_b(w.data(), s.N, s.K, t, got, 8);
         char what[128];
@@ -191,7 +192,7 @@ int main() {
     // preserve the kernel's eight-gate, eight-up order.
     {
         constexpr int F = 512, K = 256;
-        const bfp16_tiling t;
+        const bfp16_tiling t = BFP16_TILE;
         const std::vector<float> gate = make_data((size_t) F * K, 91);
         const std::vector<float> up = make_data((size_t) F * K, 92);
         std::vector<float> interleaved((size_t) 2 * F * K);
@@ -207,6 +208,76 @@ int main() {
                                    memcpy(row, src, K * sizeof(float));
                                });
         check(got == want, "fused gate/up row-wise packing preserves the eight-row interleave");
+    }
+
+    // The BFP16 kernel's output, as its epilogue lays each mode out: a tile's
+    // 8x8 blocks in order, each row-major, packed from the tile's front, the
+    // tiles row block by row block. Built here from a known result and read
+    // back with bfp16_tile_row.
+    {
+        const bfp16_tiling & t = BFP16_TILE;
+        constexpr int M = 128, N = 512, F = N / 2;
+        const std::vector<float> full = make_data((size_t) M * N, 301), fused = make_data((size_t) M * F, 302);
+        auto bf16 = [](float v) {
+            uint32_t u;
+            memcpy(&u, &v, 4);
+            return (uint16_t) (u >> 16);
+        };
+        auto as_float = [](uint16_t h) {
+            const uint32_t u = (uint32_t) h << 16;
+            float v;
+            memcpy(&v, &u, 4);
+            return v;
+        };
+        for (int mode = 0; mode < 3; mode++) {
+            const int width = mode == 2 ? F : N, across = (mode == 2 ? t.n / 2 : t.n) / 8;
+            const std::vector<float> & src = mode == 2 ? fused : full;
+            std::vector<uint8_t> c(bfp16_c_bytes(M, N, t, mode));
+            const size_t tile_bytes = bfp16_tile_words(t, mode) * 4;
+            for (int rb = 0; rb < M / t.m; rb++)
+                for (int ct = 0; ct < N / t.n; ct++)
+                    for (int z = 0; z < t.m / 8; z++)
+                        for (int j = 0; j < across; j++)
+                            for (int i = 0; i < 64; i++) {
+                                const float v = src[(size_t) (rb * t.m + z * 8 + i / 8) * width + ct * across * 8 + j * 8 + i % 8];
+                                uint8_t * at = c.data() + ((size_t) rb * (N / t.n) + ct) * tile_bytes;
+                                const size_t e = (size_t) (z * across + j) * 64 + i;
+                                if (mode == 0) memcpy(at + e * 4, &v, 4);
+                                else {
+                                    const uint16_t h = bf16(v);
+                                    memcpy(at + e * 2, &h, 2);
+                                }
+                            }
+            bool ok = true;
+            std::vector<float> row((size_t) width);
+            for (int r = 0; r < M; r++) {
+                bfp16_tile_row(c.data(), N, t, mode, r, row.data());
+                for (int x = 0; x < width; x++) {
+                    const float v = src[(size_t) r * width + x];
+                    ok = ok && row[x] == (mode == 0 ? v : as_float(bf16(v)));
+                }
+            }
+            char what[96];
+            snprintf(what, sizeof(what), "output mode %d: bfp16_tile_row reads every row of the kernel's layout", mode);
+            check(ok, what);
+        }
+
+        // Mode 3: the kernel packs each pair's 8x8 results (rows of 8 along
+        // the next K) as eight blocks on 72-byte slot (z / 2 * PJ + j) * 2 +
+        // z % 2 of its tile (mm_bfp_acc.cc, pack_chain). That must be the next
+        // multiply's A operand, byte for byte.
+        std::vector<uint8_t> c(bfp16_c_bytes(M, N, t, 3)), want;
+        const int PJ = t.n / 16;
+        for (int rb = 0; rb < M / t.m; rb++)
+            for (int ct = 0; ct < N / t.n; ct++)
+                for (int z = 0; z < t.m / 8; z++)
+                    for (int j = 0; j < PJ; j++)
+                        for (int i = 0; i < 8; i++)
+                            bfp16_encode_block(fused.data() + (size_t) (rb * t.m + z * 8 + i) * F + ct * (t.n / 2) + j * 8,
+                                               c.data() + ((size_t) rb * (N / t.n) + ct) * bfp16_tile_words(t, 3) * 4 +
+                                                   (size_t) ((z / 2 * PJ + j) * 2 + z % 2) * 72 + (size_t) i * 9);
+        bfp16_pack_a(fused.data(), M, F, t, want, 4);
+        check(c == want, "output mode 3: the kernel's packing is the next multiply's A operand, byte for byte");
     }
 
     // A block whose maximum rounds up to +128 (measured on the NPU's

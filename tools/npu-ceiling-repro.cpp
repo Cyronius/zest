@@ -64,7 +64,7 @@ namespace {
 
 constexpr int64_t M = 512, K = 5120, N = 17408;  // Qwen3.8-27B's feed-forward shape, about 100 MB a buffer
 constexpr double GiB = 1024.0 * 1024 * 1024;
-const bfp16_tiling TILE;
+const bfp16_tiling & TILE = BFP16_TILE;
 
 struct options {
     double start_gib = 16, step_gib = 2, max_gib = 48, min_free_gib = 6, min_disk_gib = 15;
@@ -301,7 +301,7 @@ int main(int argc, char ** argv) {
     {
         std::vector<float> row((size_t) N);
         for (int64_t r : { (int64_t) 0, M / 2 - 1, M - 1 }) {
-            bfp16_c_row(base.data(), M, N, TILE, r, N, row.data());
+            bfp16_tile_row(base.data(), N, TILE, 0, r, row.data());
             for (int64_t n = 0; n < N; n++) {
                 int32_t want = 0;
                 for (int64_t k = 0; k < K; k++) want += ai[(size_t) (r * K + k)] * wi[(size_t) (n * K + k)];

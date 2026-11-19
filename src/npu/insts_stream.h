@@ -38,6 +38,9 @@ struct stream {
 
     void put(std::initializer_list<uint32_t> words) { w.insert(w.end(), words); ops++; }
     void write32(uint32_t addr, uint32_t v) { put({ 0, 0, addr, 0, v, 24 }); }
+    void maskwrite32(uint32_t addr, uint32_t v, uint32_t mask) { put({ 3, 0, addr, 0, v, mask, 28 }); }
+    // eight consecutive registers: a buffer descriptor
+    void write_bd(uint32_t addr, const uint32_t w[8]) { put({ 1, 0, addr, 48, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7] }); }
 
     // One transfer between a kernel argument and a shim DMA channel: a linear
     // buffer descriptor (every transfer this design makes is contiguous), the
@@ -52,7 +55,7 @@ struct stream {
         put({ 1, 0, a, 48, words, off, 0, 0, 0xc0000000, 0x02000000, 0, 0x02000000 });
         put({ 0x81, 48, 0, 0, 0, 0, a + 4, 0, arg, 0, off, 0 });
         if (drain) {
-            put({ 3, 0, tile_addr(col, 0, S2MM0_CTRL), 0, 0xf00, 0x1f00, 28 });
+            maskwrite32(tile_addr(col, 0, S2MM0_CTRL), 0xf00, 0x1f00);
             drains.push_back(col);
         }
         write32(tile_addr(col, 0, queue), (drain ? 0x80000000u : 0u) | ((repeat - 1) << 16) | (uint32_t) bd);

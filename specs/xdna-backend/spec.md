@@ -945,16 +945,75 @@ day, land at the same errors (8.7e-3 to 9.0e-3).
 
 ---
 
+### XDNA-FFN-CHAIN: A feed-forward block's two multiplies run as one NPU submission
+**Applies to:** Zest
+**Test category:** integration
+
+When a claimed piece holds a SwiGLU whose gate and up multiplies are fused
+(XDNA-SIZE-POLICY) and whose result is read by exactly one thing, a weight
+multiply in the same piece with nothing between them (the feed-forward's
+down), the backend shall run the two multiplies as one NPU submission: the
+first in the kernel's output mode 3, which writes SiLU(gate) * up as bfp16
+blocks in the layout of the second's activation operand, and the second
+reading that buffer on the NPU. The host neither reads the middle result
+nor packs it. Otherwise (the result read elsewhere or outside the piece, an
+op between, either weight under the quantized-weight kernel, a feed-forward
+width that is not a multiple of 256, or `GGML_XDNA_CHAIN=0`) the two run as
+before, with a host pass between them.
+
+The answers shall not change: mode 3 rounds each value to bf16 as mode 2
+does and then packs it exactly as the host would, so the second multiply
+sees the same bytes either way.
+
+A damaged first multiply is still caught: a NaN or infinity in its sums
+makes that row of the second multiply's output NaN, which
+XDNA-NPU-RESULT-CHECK then catches.
+
+**Acceptance criteria:**
+- `test-npu-wide` (ctest `npu-wide`, label `npu`): on a 1,024 x 512 gate/up
+  of width 1,024 and a 512-wide down with random weights, mode 3's output
+  equals the host's packing of mode 2's output byte for byte, and the two
+  multiplies as one submission give the down multiply's output on the
+  host-packed activations, byte for byte, twice in a row
+- `kernels/bfp16_gemm/designs/check_placement.py` passes on the shipped
+  kernel's build (XDNA-INSTS-GEN)
+
+**Verification (manual, the model):** on Qwen3.8-27B Q4_K_M, the KL
+divergence check of `tools/linux-npu-check.sh` shall print the same figures
+with `GGML_XDNA_CHAIN=0` and without it, and `GGML_XDNA_TRACE=1` shall show
+fewer host passes without it.
+
+**Passing 2026-11-18:** `npu-wide` passes; on the 27B the mean KL divergence
+against the GPU is 0.003445 both ways (and with the kernel before chains),
+maximum 0.251934, same top token 96.275%; host passes per 196 multiplies
+fall from 576 to 520.
+
+---
+
 ### XDNA-INSTS-GEN: The backend's NPU instruction streams match the toolchain's
 **Applies to:** Zest
 **Test category:** unit
 
 For every size the kernel takes, the instruction stream the backend makes
 (`src/npu/bfp16_insts.cpp`) shall equal, word for word, the `insts.bin` the
-IRON toolchain builds from `kernels/bfp16_gemm/designs/whole_array_bfp_rtp.py`
-(`-Tm 128 -Tk 64 -Tn 64 --c-tiled`, 8 columns) at that size and output mode.
-Sizes the design can't take (M not a multiple of 512, N not a multiple of
-512 or over 32,768, K not a multiple of 64 or under 128) shall be refused.
+IRON toolchain builds from
+`kernels/bfp16_gemm/designs/whole_array_bfp_colwise.py` (core tile 64 x 64 x
+128) at that size and output mode (0 to 3). Sizes the design can't take (M
+not a multiple of 512, N not a multiple of 512 or over 34,816, K not a
+multiple of 64 or under 128) shall be refused.
+
+The stream also programs the memtiles itself: how many words of each output
+tile they pass on (by output mode), and whether each keeps its column's row
+block of A for the call and plays it to the cores once per output tile
+(K up to 5,440, M up to 1,024, N at least 1,536: `bfp16_insts_resident`) or
+relays A tile by tile as the fifo was built. Both give the same results; the
+first reads A from DDR once instead of once per 512 output columns. For
+that the stream writes registers the toolchain placed (channels, buffer
+descriptor and lock IDs, buffer addresses): the design pins every column's
+fifos to its own memtile and shim, holds the resulting placement as
+constants, emits the same writes in its own runtime sequence, and
+`designs/check_placement.py`, run by the kernel build scripts, fails a
+build whose placement differs.
 
 This is what lets the backend ship one ~200 KB xclbin and run any model's
 sizes with no toolchain: the core program is the same for every size, and
@@ -962,12 +1021,15 @@ only this stream changes. A wrong transfer descriptor can give plausible
 wrong output rather than a crash, so it is checked word for word.
 
 **Acceptance criteria:** `tests/test-insts-gen.cpp` against the reference
-streams in `tests/insts/` (30 sizes: M 512 and 1,024; K 128 to 9,728; N 512
-to 18,432; modes 0, 1 and 2), and five refused sizes. To add a size, build it
-with `kernels/bfp16_gemm/build.ps1 -M <M> -K <K> -N <N> [-OutMode <mode>]`
-and copy its `insts.bin` there.
+streams in `tests/insts/` (35 sizes: M 512 to 2,048; K 128 to 9,728; N 512
+to 18,432; modes 0 to 3), and five refused sizes. To add a size, build it
+with `kernels/bfp16_gemm/build-linux.sh <M> <K> <N> [<mode>]` (or
+`build.ps1 -M <M> -K <K> -N <N> [-OutMode <mode>]`) and copy its `insts.bin`
+there.
 
-**Passing 2026-09-29:** 30 of 30 identical, 5 of 5 refused.
+**Passing 2026-11-18** (the by-column design, resident and relayed A): 35
+of 35 identical, 5 of 5 refused. (2026-09-29, the design before it: 30 of
+30.)
 
 ---
 
@@ -984,6 +1046,11 @@ tilings. Unpacking shall give back exactly the decoded values.
 A wrong layout gives plausible wrong output, not a crash, and on a machine
 without an NPU this is the only check of it (XDNA-MUL-MAT-AGREES covers it
 end to end on the NPU).
+
+The kernel's output layouts are checked the same way: built here as the
+kernel's epilogue lays each output mode out, `bfp16_tile_row` shall read
+every row back, and output mode 3's packing shall be the next multiply's
+activation operand byte for byte.
 
 **Acceptance criteria:** `tests/test-bfp16-pack.cpp` against that
 reference, copied into the test unchanged (its source,

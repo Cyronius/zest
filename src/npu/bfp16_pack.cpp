@@ -291,6 +291,45 @@ size_t bfp16_b_offset(int64_t r, int64_t cb, int64_t N, int64_t K, const bfp16_t
     return (size_t) (tile * t.n * (t.k / 8) + in_tile(r % t.n, cb, t)) * BFP16_BLOCK_BYTES;
 }
 
+size_t bfp16_tile_words(const bfp16_tiling & t, int mode) {
+    const size_t all = (size_t) t.m * (size_t) t.n;
+    switch (mode) {
+        case 0: return all;
+        case 1: return all / 2;
+        case 2: return all / 4;
+        default: return (size_t) t.m * (size_t) (t.n / 16) * BFP16_BLOCK_BYTES / 4;
+    }
+}
+
+void bfp16_tile_row(const void * c, int64_t N, const bfp16_tiling & t, int mode, int64_t r, float * row) {
+    const int64_t tiles = N / t.n;
+    const int64_t groups = mode == 2 ? t.n / 16 : t.n / 8;  // 8-value runs a tile row holds
+    const size_t tile_bytes = bfp16_tile_words(t, mode) * 4, elem = mode == 0 ? sizeof(float) : sizeof(uint16_t);
+    // the row's first run: block row (r % m) / 8, row r % 8 inside it
+    const uint8_t * p = (const uint8_t *) c + (size_t) (r / t.m) * (size_t) tiles * tile_bytes +
+                        (size_t) (((r % t.m) / 8) * groups * 64 + (r % 8) * 8) * elem;
+    for (int64_t ct = 0; ct < tiles; ct++, p += tile_bytes, row += groups * 8) {
+        for (int64_t g = 0; g < groups; g++) {
+            const uint8_t * h = p + (size_t) g * 64 * elem;
+            if (mode == 0) {
+                memcpy(row + g * 8, h, 8 * sizeof(float));
+                continue;
+            }
+#ifdef __AVX2__
+            const __m256i x = _mm256_cvtepu16_epi32(_mm_loadu_si128((const __m128i *) h));
+            _mm256_storeu_ps(row + g * 8, _mm256_castsi256_ps(_mm256_slli_epi32(x, 16)));
+#else
+            for (int i = 0; i < 8; i++) {
+                uint16_t v;
+                memcpy(&v, h + i * 2, 2);
+                const uint32_t bits = (uint32_t) v << 16;
+                memcpy(row + g * 8 + i, &bits, 4);
+            }
+#endif
+        }
+    }
+}
+
 void bfp16_c_row(const float * c, int64_t M, int64_t N, const bfp16_tiling & t, int64_t r, int64_t n_cols, float * row) {
     const int64_t rb = (int64_t) t.m * t.rows, blk = rb * t.n, J = N / ((int64_t) t.n * t.cols);
     const float * base = c + (r / rb) * J * blk + (r % rb) * t.n;

@@ -446,6 +446,155 @@ tokens/s at 1,024 / 2,048 / 2,769 tokens, micro-batch 2,048:
   the GPU about 21); the host's work between the NPU's multiplies is the
   loss. Next: the feed-forward block as one NPU submission.
 
+### After Phase 3: the feed-forward block as one NPU submission (2026-11-18)
+
+A feed-forward block was three NPU calls with the host between them: the
+fused gate/up call wrote SiLU(gate) * up as bf16, the host read all of it
+(the block's widest tensor, 17,408 values a token on the 27B), packed it
+again as bfp16 activations, and submitted the down call. Now the first call
+writes that result as the second's activation operand and the two go to the
+NPU together (XDNA-FFN-CHAIN in `specs/xdna-backend/spec.md`). Three things
+made that possible, and all three are in the BFP16 kernel that ships
+(`designs/whole_array_bfp_colwise.py`, which replaces
+`whole_array_bfp_rtp.py`):
+
+- **Activations by column.** Before, each core row took a block of A's rows
+  and each column a group of B's, and a column's memtile joined its four
+  cores' output tiles: four different row blocks of the same output columns.
+  C therefore landed in DDR output-column-major, the transpose of what a
+  multiply reads as A (row block by row block, every K chunk of it
+  together). Now each column takes a row block of A and each core row a
+  group of B (core tile 64 x 64 x 128, so a core's fused tile is 64 rows x 64
+  SiLU(gate) * up values: exactly one A tile of the next multiply), and a
+  column's join is four consecutive K tiles of one row block. C is row-major
+  in tiles, and in mode 3 it is the next A byte for byte, in K's natural
+  order. Same traffic per FLOP as before (A once per 512 outputs, B once per
+  512 rows); the multiply kernel is the same source at other tile sizes.
+- **Only a mode's bytes reach DDR.** Every output mode packs its results at
+  the tile's front, but the whole 32 KB fp32 tile used to travel to DDR
+  whatever the mode. The instruction stream now sets how many words of each
+  tile the memtiles pass on (the length field of the join's four buffer
+  descriptors): all of it (mode 0), half (bf16), a quarter (fused), or 4,608
+  bytes (mode 3). A fused gate/up call's C falls from 143 MB to 20 MB per
+  1,024 rows, 13% of that call's DDR traffic.
+  A memtile channel waiting for its lock has **already loaded its next
+  descriptor**: writing a new length alone left the first tile after every
+  change at the old length (found by where the tiles landed). So the stream
+  resets the channel and starts it again at its first descriptor. For that
+  to be where the channel stands between calls, the join has one buffer, not
+  two: its four descriptors go round once per join (a second buffer buys
+  nothing, tiles being tens of thousands of cycles apart).
+  The stream therefore writes registers the toolchain placed. The design
+  holds that placement as a table, emits the same writes in its own runtime
+  sequence (so the host's streams are still checked word for word against
+  the toolchain's, 35 of 35), and `check_placement.py` fails a build whose
+  placement differs.
+- **Mode 3 in the epilogue** (`mm_bfp_acc.cc`, `pack_chain`): the SwiGLU
+  values, rounded to bf16 as mode 2 sends them, converted on the core to
+  bfp16ebs8 (the conversion the Q4_K unpacker uses, equal to the host's
+  `bfp16_encode_block`) and stored where the next A tile has them.
+
+Checks: mode 3's output equals the host's packing of mode 2's, byte for
+byte, at 1,024 x 512 x 2,048 and at the 27B's 1,024 x 5,120 x 34,816; the two
+calls as one runlist give the down call's output on host-packed activations
+(`test-npu-wide`); a whole block through the backend gives the same bits
+with and without chains and under the quantized kernel
+(`ffn-chain-same-bits`); a NaN made in the first call comes out as a NaN
+row of the second. On the 27B the KL figures are those of the kernel before
+(0.003445 mean, 0.251934 maximum, 96.275% same top token), chains on or
+off.
+
+Speed, with another session's LLM server keeping the GPU at 95% throughout
+(so DRAM, which this kernel is bound by, was shared: the old kernel ran at
+15.4-16.5 TFLOPS in the same sitting, against 20.3-21.0 that morning):
+
+| call, 1,024 rows | kernel before | by column |
+|---|---|---|
+| gate/up fused, bf16 out (5,120 -> 34,816) | 23.65 ms | 22.93 ms |
+| the same, written as the next A | (none) | 22.81 ms |
+| down (17,408 -> 5,120) | 11.04 ms | 10.87 ms |
+
+Qwen3.8-27B Q4_K_M, 2,048 tokens, ten samples each in turn: 190.8
+tokens/s before (163-197), 196.2 with the new kernel and chains (194-202).
+Host passes per 196 multiplies fall from 576 to 520, and the pass workers'
+decode and encode time by 30% and 24%, but inside the pieces the NPU's own
+time is now what the host waits on, so most of that saving shows as
+waiting. With the GPU to itself later that evening (controls matching the
+morning's quiet figures): 300.0 before, 305.6 with the new kernel and
+chains.
+
+**Activations resident in the memtile (2026-11-18, in the shipped kernel).**
+The BFP16 kernel is held by DRAM at about 50 GB/s of the port's 57 (21
+TFLOPS quiet), and nearly half of a call's traffic is A, read from DDR once
+for every 512 output columns. Now a call whose row block fits (K up to
+5,440) has each column's memtile take its 64-row block of A once per pass
+and play it to its cores once per output tile, as artlite does: A crosses
+DDR once. That is 368,640 bytes of a memtile's 524,288 at K = 5,120, beside
+the C join's 131,072, which the by-column layout makes possible (one row
+block per memtile) and which needed three things in the design:
+
+- every column's fifos pinned to its own memtile and shim (the toolchain had
+  put two columns' A in one memtile), which also makes the placement the
+  same in every column;
+- B straight from the shims to the core rows, with no memtile relay, whose
+  two tiles took two of the banks the row block needs (no slower: 4.06
+  against 4.15 ms on 1,024 x 5,120 x 5,120);
+- the runtime sequence programming the memtile itself, per call: it resets
+  A's two channels and gives them either the fifo's own descriptors again
+  (A relayed tile by tile, for a longer K) or three of its own over the
+  whole row block: *fill* (waits on a "free" lock, releases "full"), *play*
+  (needs "full", leaves it; queued with a repeat count of the tiles less
+  one) and a pass's *last play* (releases "free", so the next pass's fill
+  can overwrite the buffer). The register words are the toolchain's own
+  (`npu_writebd`, `npu_push_queue`), and the host makes the same stream,
+  checked word for word (45 of 45 reference streams, both kinds).
+
+Results are the same bits as relayed (mode 3's output still equals the
+host's packing; calls of either kind in any order in one context; the 27B's
+KL figures unchanged). A narrow call loses (the 27B's 1,024-wide k
+projection ran 10% slower: a memtile plays a block only once it has all of
+it), so calls under three output tiles stay relayed, as do the down multiply
+(K = 17,408) and the 6,144-long o projection.
+
+Speed, the same loaded sitting (GPU at 100% for another session), relayed
+and resident kernels in turn, 1,024 rows:
+
+| call | relayed | resident |
+|---|---|---|
+| gdn qkv (5,120 -> 10,240) | 7.11, 7.49 ms | 6.27, 6.59 ms |
+| gdn z (5,120 -> 6,144) | 4.54, 4.65 | 4.01, 3.95 |
+| fa q+gate (5,120 -> 12,288) | 9.04, 9.42 | 7.66, 7.89 |
+| gate/up fused, as the next A (5,120 -> 34,816) | 25.67, 27.15 | 22.09, 21.73 |
+| down (17,408 -> 5,120), relayed in both | 12.03, 12.01 | 11.78, 11.60 |
+
+13-25% on the calls it applies to, which are about two thirds of the 27B's
+FLOPs. With the GPU to itself later that evening, in turn twice:
+
+| call | relayed | resident |
+|---|---|---|
+| gdn qkv (5,120 -> 10,240) | 4.71, 4.65 ms (22.8-23.1 TFLOPS) | 4.06, 4.01 (26.5-26.8) |
+| fa q+gate (5,120 -> 12,288) | 5.64, 5.55 | 4.80, 4.76 (26.9-27.1) |
+| gate/up fused, as the next A | 17.38, 16.93 (21.0-21.6) | 14.68, 14.68 (24.9) |
+| down, relayed in both | 7.76, 7.62 (23.5-24.0) | 7.62, 7.64 |
+| all seven shapes | 59.1, 57.9 (21.8-22.2) | 51.7, 51.7 (24.9) |
+
+A resident gate/up call moves 427 MB instead of 822, at 29 GB/s: DRAM no
+longer holds it. What does is a core's own streams: each core takes its
+operands on two 32-bit streams, and B's tile (9,216 bytes per K chunk) needs
+at least 2,304 cycles, 26 TFLOPS for the array at 1.81 GHz, which is where
+these calls now run. Prefill at 2,048 tokens: 305.6 to 323.8 tokens/s.
+
+**Kernel work that remains.**
+- *A balanced tile* (80 x 64 x 80) would lift the stream limit to the
+  multiply loop's own (about 30 TFLOPS), at awkward sizes (M in 640s, N in
+  320s).
+- *The o projection resident* (K = 6,144 needs 442,368 bytes): room for it
+  if the C join took only the bytes a 16-bit mode sends (65,536), which
+  means shortening the cores' own transfers, whose receiving channels wait
+  with a lock already taken.
+- *The down multiply* (a quarter of the FLOPs) cannot be resident at
+  K = 17,408; its traffic is A and B in equal parts.
+
 ### Phase 3: backend
 
 - `src/xdna-npu.{h,cpp}`:

@@ -556,7 +556,13 @@ On the NPU, one kernel program serves every model: the add-on makes the NPU
 instructions for each matrix size itself, so there's nothing to build per
 model. The kernel works in bfp16, blocks of eight 8-bit values sharing one
 exponent. Each weight is converted once, on first use. While the NPU runs one
-part of the prompt, the CPU prepares the next.
+part of the prompt, the CPU prepares the next. Where a multiply's
+activations fit, the NPU keeps them in its own memory for the whole call
+rather than reading them from main memory again for every stretch of
+outputs. A feed-forward block's two
+multiplies run back to back on the NPU: the first writes its result
+(SiLU(gate) x up) straight into the form the second reads, so the CPU never
+handles the block's widest tensor.
 
 ## Troubleshooting
 
@@ -618,6 +624,7 @@ An empty value counts as unset.
 | `GGML_XDNA_QKERNELS` | `bfpq_gemm.xclbin` next to the add-on | another xclbin for the quantized-weight kernel |
 | `GGML_XDNA_BLOCKS` | 1 | 0 takes only the multiplies, not the steps between them |
 | `GGML_XDNA_STREAMS` | 2 | how many parts a piece is split into, so the CPU and NPU overlap |
+| `GGML_XDNA_CHAIN` | 1 | 0 brings a feed-forward block's middle result back to the CPU between its two multiplies instead of chaining them on the NPU (the answers are the same either way) |
 | `GGML_XDNA_N_THREADS` | all cores | CPU threads for the add-on's own work |
 | `GGML_XDNA_TRACE` | 0 | 1 prints where the time goes |
 | `GGML_XDNA_PINNED` | 1 | 0 reads from the GPU into ordinary memory instead of pinned memory: slower, for software Vulkan devices |

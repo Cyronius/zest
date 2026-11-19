@@ -13,7 +13,7 @@ def check(package: Path) -> None:
     windows = os.name == "nt"
     suffix = ".exe" if windows else ""
     backend = "ggml-zest.dll" if windows else "libggml-zest.so"
-    required = [backend, "bfp16_gemm.xclbin", "llama-server" + suffix,
+    required = [backend, "bfp16_gemm.xclbin", "bfpq_gemm.xclbin", "llama-server" + suffix,
                 "zest" + suffix, "npu" + suffix]
     required += ["Start-Lemonade.cmd", "tools/start-lemonade.ps1"] if windows else ["libggml-zest-xrt.so"]
     for name in required:

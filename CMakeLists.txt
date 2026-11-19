@@ -217,7 +217,7 @@ add_custom_command(TARGET zest POST_BUILD
 
 enable_testing()
 
-foreach(t test-mul-mat test-dispatch-gate test-memory-budget test-safe-start test-host-ops)
+foreach(t test-mul-mat test-dispatch-gate test-memory-budget test-safe-start test-host-ops test-ffn-block)
     add_executable(${t} tests/${t}.cpp)
     target_include_directories(${t} PRIVATE "${GGML_HEADERS}/include")
     target_compile_definitions(${t} PRIVATE GGML_SHARED GGML_BACKEND_SHARED)
@@ -230,7 +230,7 @@ endforeach()
 
 # The NPU instruction streams made on the host, against the toolchain's (no
 # NPU or XRT needed).
-add_executable(test-insts-gen tests/test-insts-gen.cpp src/npu/bfp16_insts.cpp src/npu/bfpq_insts.cpp)
+add_executable(test-insts-gen tests/test-insts-gen.cpp src/npu/bfp16_insts.cpp src/npu/bfpq_insts.cpp src/npu/bfp16_pack.cpp)
 target_include_directories(test-insts-gen PRIVATE src/npu)
 target_compile_definitions(test-insts-gen PRIVATE XDNA_INSTS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/insts")
 
@@ -289,6 +289,19 @@ set_tests_properties(memory-budget-npu PROPERTIES LABELS npu ENVIRONMENT "${XDNA
 # the same limit with every copy for the quantized-weight kernel
 add_test(NAME memory-budget-npu-quant COMMAND "${GGML_DIST}/test-memory-budget${EXE}")
 set_tests_properties(memory-budget-npu-quant PROPERTIES LABELS npu ENVIRONMENT "${XDNA_BUDGET_ENV};GGML_XDNA_HOST_ONLY=;GGML_XDNA_WEIGHTS=quant")
+# A whole feed-forward block on the NPU: gate/up fused and the down multiply
+# chained behind them; the same with a host pass between (and the same bits);
+# under the quantized-weight kernel, which doesn't chain; and on the host.
+add_test(NAME ffn-block-host COMMAND "${GGML_DIST}/test-ffn-block${EXE}")
+set_tests_properties(ffn-block-host PROPERTIES LABELS host ENVIRONMENT "${XDNA_ENV};GGML_XDNA_HOST_ONLY=1")
+add_test(NAME ffn-block-npu COMMAND "${GGML_DIST}/test-ffn-block${EXE}")
+set_tests_properties(ffn-block-npu PROPERTIES LABELS npu ENVIRONMENT "${XDNA_ENV};GGML_XDNA_HOST_ONLY=")
+add_test(NAME ffn-block-npu-quant COMMAND "${GGML_DIST}/test-ffn-block${EXE}")
+set_tests_properties(ffn-block-npu-quant PROPERTIES LABELS npu ENVIRONMENT "${XDNA_ENV};GGML_XDNA_HOST_ONLY=;GGML_XDNA_WEIGHTS=quant")
+add_test(NAME ffn-chain-same-bits COMMAND ${CMAKE_COMMAND} "-DEXE=${GGML_DIST}/test-ffn-block${EXE}"
+    "-DENV_BOTH=${XDNA_ENV};GGML_XDNA_HOST_ONLY=" "-DENV_A=GGML_XDNA_CHAIN=1" "-DENV_B=GGML_XDNA_CHAIN=0"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/same-checksum.cmake")
+set_tests_properties(ffn-chain-same-bits PROPERTIES LABELS npu)
 # the host's small steps between NPU matmuls, against ggml's CPU backend
 add_test(NAME host-ops-host COMMAND "${GGML_DIST}/test-host-ops${EXE}")
 set_tests_properties(host-ops-host PROPERTIES LABELS host ENVIRONMENT "${XDNA_ENV};GGML_XDNA_HOST_ONLY=1")

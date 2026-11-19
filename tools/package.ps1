@@ -55,6 +55,7 @@ foreach ($f in "ggml-zest.dll", "zest.exe", "npu.exe") {
     Copy-Item $p $stage
 }
 Copy-Item (Join-Path $Root "kernels\bfp16_gemm\prebuilt\bfp16_gemm.xclbin") $stage
+Copy-Item (Join-Path $Root "kernels\bfp16_gemm\prebuilt\bfpq_gemm.xclbin") $stage
 # the README's measurements, for anyone to rerun; it finds zest.exe next to it
 Copy-Item (Join-Path $Root "tools\bench.ps1") $stage
 Copy-Item (Join-Path $Root "Start-Lemonade.cmd") $stage

@@ -81,12 +81,13 @@ int npu_bfp16::add_shape(const std::string & insts_path, int64_t M, int64_t K, i
 }
 
 int npu_bfp16::add_shape(const std::vector<uint32_t> & instr, int64_t M, int64_t K, int64_t N, std::string & err,
-                         int kernel, size_t b_bytes) {
+                         int kernel, size_t b_bytes, size_t c_bytes) {
     if (kernel < 0 || kernel >= (int) kernels_.size()) { err = "no such kernel"; return -1; }
     shape s;
     s.M = M; s.K = K; s.N = N;
     s.kernel = kernel;
     s.b_bytes = b_bytes ? b_bytes : (size_t) (N * K / 8 * BFP16_BLOCK_BYTES);
+    s.c_bytes = c_bytes ? c_bytes : (size_t) (M * N) * sizeof(float);
     const size_t bytes = instr.size() * sizeof(uint32_t);
     s.n_words = (int) instr.size();
     s.ibo = xrtsh_bo_create_instr(dev_, kernels_[kernel].kern, bytes);
@@ -165,7 +166,7 @@ bool npu_bfp16::ensure(void *& bo, size_t & have, size_t need, std::string & err
 
 bool npu_bfp16::set_a(int si, const std::vector<uint8_t> & packed, std::string & err) {
     const shape & s = shapes_.at(si);
-    const size_t need = (size_t) (s.M * s.K / 8 * BFP16_BLOCK_BYTES);
+    const size_t need = s.a_bytes();
     if (packed.size() != need) { err = "activation operand is the wrong size for this shape"; return false; }
     if (!a_slot(0, need, err)) return false;
     if (xrtsh_bo_write(abos_[0], packed.data(), need, 0) < 0 || xrtsh_bo_sync(abos_[0], 1) < 0) {
@@ -178,8 +179,7 @@ bool npu_bfp16::set_a(int si, const std::vector<uint8_t> & packed, std::string &
 bool npu_bfp16::run(int si, int wi, float * c, std::string & err, double * ms) {
     const shape & s = shapes_.at(si);
     if (!submit(s, 0, weights_.at(wi), err, ms)) return false;
-    const size_t c_need = (size_t) (s.M * s.N) * sizeof(float);
-    if (xrtsh_bo_sync(cbo_, 0) < 0 || xrtsh_bo_read(cbo_, c, c_need, 0) < 0) {
+    if (xrtsh_bo_sync(cbo_, 0) < 0 || xrtsh_bo_read(cbo_, c, s.c_bytes, 0) < 0) {
         err = shim_error("output read");
         return false;
     }
@@ -199,14 +199,14 @@ uint8_t * npu_bfp16::a_slot(int slot, size_t bytes, std::string & err) {
 
 uint8_t * npu_bfp16::a_map(int si, std::string & err, int slot) {
     const shape & s = shapes_.at(si);
-    return a_slot(slot, (size_t) (s.M * s.K / 8 * BFP16_BLOCK_BYTES), err);
+    return a_slot(slot, s.a_bytes(), err);
 }
 
 bool npu_bfp16::run_mapped(int si, int wi, const float *& c, std::string & err, double * ms, int slot) {
     const shape & s = shapes_.at(si);
     // Only the bytes this shape uses: the buffers are sized for the largest
     // shape, and syncing all of them costs more than a small dispatch.
-    const size_t a_n = (size_t) (s.M * s.K / 8 * BFP16_BLOCK_BYTES);
+    const size_t a_n = s.a_bytes();
     if ((int) abos_.size() <= slot || a_caps_[slot] < a_n) { err = "no activations set for this shape"; return false; }
     auto t0 = std::chrono::steady_clock::now();
     if (xrtsh_bo_sync_range(abos_[slot], 1, a_n, 0) < 0) { err = shim_error("activation sync"); return false; }
@@ -215,7 +215,7 @@ bool npu_bfp16::run_mapped(int si, int wi, const float *& c, std::string & err, 
     sync_ms += took;
     if (!submit(s, slot, weights_.at(wi), err, ms)) return false;
     t0 = std::chrono::steady_clock::now();
-    if (xrtsh_bo_sync_range(cbo_, 0, (size_t) (s.M * s.N) * sizeof(float), 0) < 0) { err = shim_error("output sync"); return false; }
+    if (xrtsh_bo_sync_range(cbo_, 0, s.c_bytes, 0) < 0) { err = shim_error("output sync"); return false; }
     took = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     sync_out_ms += took;
     sync_ms += took;
@@ -259,20 +259,35 @@ bool npu_bfp16::batch::reserve(int n, size_t a_bytes, size_t b_bytes, size_t c_b
     return true;
 }
 
-bool npu_bfp16::batch::prepare(const std::vector<int> & shapes, std::string & err, const std::vector<int> & b) {
+bool npu_bfp16::batch::prepare(const std::vector<int> & shapes, std::string & err, const std::vector<int> & b,
+                               const std::vector<int> & a_from) {
     if (in_flight_) { err = "batch prepared while running"; return false; }
     if (calls_.size() < shapes.size()) calls_.resize(shapes.size());
     n_ = shapes.size();
     if (!b.empty() && b.size() != 1 && b.size() != n_) { err = "one B buffer, or one per call"; return false; }
+    if (!a_from.empty() && a_from.size() != n_) { err = "one A source per call"; return false; }
     b_.assign(n_, -1);
     for (size_t i = 0; i < n_ && !b.empty(); i++) b_[i] = b.size() == 1 ? b[0] : b[i];
     for (size_t i = 0; i < n_; i++) {
+        calls_[i].a_from = a_from.empty() ? -1 : a_from[i];
+        calls_[i].feeds = false;
+    }
+    for (size_t i = 0; i < n_; i++) {
         call & c = calls_[i];
         const shape & s = npu_.shapes_.at(shapes[i]);
-        const size_t a_need = (size_t) (s.M * s.K / 8 * BFP16_BLOCK_BYTES), b_need = s.b_bytes;
-        const size_t c_need = (size_t) (s.M * s.N) * sizeof(float);
+        const size_t a_need = s.a_bytes(), b_need = s.b_bytes, c_need = s.c_bytes;
         const int bi = b_[i];
-        if (!npu_.ensure(c.a, c.a_cap, a_need, err) || !npu_.ensure(c.c, c.c_cap, c_need, err)) return false;
+        if (c.a_from >= 0) {
+            // an earlier call's output, which that call's shape makes exactly this A
+            if (c.a_from >= (int) i || npu_.shapes_[calls_[c.a_from].shape].c_bytes != a_need) {
+                err = "a call's A is not an earlier call's output of its size";
+                return false;
+            }
+            calls_[c.a_from].feeds = true;
+        } else if (!npu_.ensure(c.a, c.a_cap, a_need, err)) {
+            return false;
+        }
+        if (!npu_.ensure(c.c, c.c_cap, c_need, err)) return false;
         if (bi < 0 && !npu_.ensure(c.b, c.b_cap, b_need, err)) return false;
         if (bi >= 0 && npu_.weights_.at(bi).bytes < b_need) { err = "a B buffer too small for this shape"; return false; }
         if (!map(c, err)) return false;
@@ -289,7 +304,7 @@ bool npu_bfp16::batch::prepare(const std::vector<int> & shapes, std::string & er
         xrtsh_run_set_arg_int(c.run, 0, 3);
         xrtsh_run_set_arg_bo (c.run, 1, s.ibo);
         xrtsh_run_set_arg_int(c.run, 2, s.n_words);
-        xrtsh_run_set_arg_bo (c.run, 3, c.a);
+        xrtsh_run_set_arg_bo (c.run, 3, c.a_from >= 0 ? calls_[c.a_from].c : c.a);
         xrtsh_run_set_arg_bo (c.run, 4, bi >= 0 ? npu_.weights_[bi].bo : c.b);
         xrtsh_run_set_arg_bo (c.run, 5, c.c);
     }
@@ -302,7 +317,7 @@ bool npu_bfp16::batch::start(std::string & err) {
     for (size_t i = 0; i < n_; i++) {
         const call & c = calls_[i];
         const shape & s = npu_.shapes_[c.shape];
-        if (xrtsh_bo_sync_range(c.a, 1, (size_t) (s.M * s.K / 8 * BFP16_BLOCK_BYTES), 0) < 0 ||
+        if ((c.a_from < 0 && xrtsh_bo_sync_range(c.a, 1, s.a_bytes(), 0) < 0) ||
             (b_[i] < 0 && xrtsh_bo_sync_range(c.b, 1, s.b_bytes, 0) < 0)) {
             err = shim_error("batch operand sync");
             return false;
@@ -370,8 +385,8 @@ bool npu_bfp16::batch::wait(std::string & err, double * ms) {
     const auto ts = std::chrono::steady_clock::now();
     if (ms) *ms = std::chrono::duration<double, std::milli>(ts - t_start_).count();
     for (size_t i = 0; i < n_; i++) {
-        const shape & s = npu_.shapes_[calls_[i].shape];
-        const size_t all = (size_t) (s.M * s.N) * sizeof(float);
+        if (calls_[i].feeds) continue;  // read by the next call, on the NPU
+        const size_t all = npu_.shapes_[calls_[i].shape].c_bytes;
         if (xrtsh_bo_sync_range(calls_[i].c, 0, c_prefix_ ? std::min(c_prefix_, all) : all, 0) < 0) {
             err = shim_error("batch output sync");
             return false;
@@ -387,12 +402,11 @@ bool npu_bfp16::batch::wait(std::string & err, double * ms) {
 bool npu_bfp16::submit(const shape & s, int slot, const wbuf & w, std::string & err, double * ms) {
     if (w.bytes != s.b_bytes) { err = "weights are the wrong size for this shape"; return false; }
     void * run_ = kernels_[s.kernel].run;
-    if ((int) abos_.size() <= slot || a_caps_[slot] < (size_t) (s.M * s.K / 8 * BFP16_BLOCK_BYTES)) {
+    if ((int) abos_.size() <= slot || a_caps_[slot] < s.a_bytes()) {
         err = "no activations set for this shape";
         return false;
     }
-    const size_t c_need = (size_t) (s.M * s.N) * sizeof(float);
-    if (!ensure(cbo_, c_bytes_, c_need, err)) return false;
+    if (!ensure(cbo_, c_bytes_, s.c_bytes, err)) return false;
 
     // opcode, instruction buffer and length, then A, B, C as the design binds them
     xrtsh_run_set_arg_int(run_, 0, 3);

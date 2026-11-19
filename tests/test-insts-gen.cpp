@@ -2,10 +2,9 @@
 // toolchain built (tests/insts/<M>x<K>x<N>_m<mode>.bin, copied from
 // kernels/bfp16_gemm/build): every word must match. A wrong buffer
 // descriptor can give plausible-looking wrong output, so this is the check.
-// To add a size, build it with kernels/bfp16_gemm/build.ps1 (-Design
-// whole_array_bfp_rtp -Tm 128 -Tk 64 -Tn 64 -DesignArgs --c-tiled) and copy
-// its insts.bin here. q4k_<M>x<K>x<N>_m<mode>.bin and qcopy_... are the
-// quantized-weight design's in its two weight formats (bfpq_insts.h;
+// To add a size, build it with kernels/bfp16_gemm/build-linux.sh M K N mode
+// and copy its insts.bin here. q4k_<M>x<K>x<N>_m<mode>.bin and qcopy_... are
+// the quantized-weight design's in its two weight formats (bfpq_insts.h;
 // build-linux.sh with DESIGN=q4k, and FMT=1 for qcopy).
 //
 // Traces: XDNA-INSTS-GEN
@@ -59,6 +58,7 @@ int main(int argc, char ** argv) {
         failures += !ok;
     }
     const bool wide = bfp16_insts_fits(512, 128, 34816) && !bfp16_insts(512, 128, 34816, 2).empty() &&
+                      !bfp16_insts(512, 128, 34816, 3).empty() && bfp16_insts(512, 128, 34816, 4).empty() &&
                       bfpq_insts_fits(384, 256, 34816) && !bfpq_insts(384, 256, 34816, 2).empty();
     printf("%s fused 34,816-wide shape accepted\n", wide ? "PASS" : "FAIL");
     failures += !wide;

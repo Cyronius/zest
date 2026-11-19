@@ -5,8 +5,9 @@
 #
 """Whole-array GEMM on quantized weights, unpacked on the array.
 
-npu-prefill-engine design derived from whole_array_bfp_rtp.py (--c-tiled), for
-specs/npu-qgemm/plan.md Phase 2. In each of the 8 columns:
+npu-prefill-engine design for specs/npu-qgemm/plan.md Phase 2, derived from
+the BFP16 design as it then was (B by array column, A by core row, C joined
+per column and laid out in DDR by column). In each of the 8 columns:
   * row 2 unpacks: the column's weights arrive as 9,728-byte objects, which
     dq_weights (aie_kernels/aie2p/dq_q4k.cc) turns into 64 x 64 bfp16ebs8 B
     tiles, exactly what the host packer makes. The format is a runtime
@@ -17,7 +18,7 @@ specs/npu-qgemm/plan.md Phase 2. In each of the 8 columns:
     own 128-row block of A, and runs mm_bfp_acc.cc's kernels unchanged, so
     output modes 0 (fp32), 1 (bf16) and 2 (SiLU(gate) * up) work as before.
 A is split over the 3 multiplying rows, so M is a multiple of 384; N of 512,
-K of 256 (format 1: 128). As in whole_array_bfp_rtp.py the core programs
+K of 256 (format 1: 128). As in whole_array_bfp_colwise.py the core programs
 serve every shape and format: the runtime sequence writes them (each
 multiplying core's K/64 - 1 and output mode, the unpacking core's objects
 and format) before its DMAs, so only insts.bin changes (src/npu/
@@ -167,7 +168,7 @@ def whole_array_qmatmul(
             obj(q_in.acquire(1), fmt, per)
 
     def mul_fn(in_a, in_b, out_c, rtp, first, mid, epilogue):
-        # One output tile per pass, as in whole_array_bfp_rtp.py.
+        # One output tile per pass, as in whole_array_bfp_colwise.py.
         elem_out = out_c.acquire(1)
         a = in_a.acquire(1)
         b = in_b.acquire(1)

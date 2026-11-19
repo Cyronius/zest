@@ -141,12 +141,27 @@ constexpr int64_t TILE_ROWS = 8;
 
 // Matmuls that share one input, run as one NPU submission (q, k and v; gate
 // and up), and where each call's result goes (a fused gate/up's: its SwiGLU).
+// A chain is a fused gate/up and then the matmul that takes its SwiGLU (the
+// feed-forward's down), run back to back on the NPU: its one result is that
+// matmul's, and the SwiGLU never comes to the host.
 struct group {
     const ggml_tensor * x = nullptr;
     std::vector<xdna_npu::wkey> keys;
     std::vector<const ggml_tensor *> outs;
     std::vector<const ggml_tensor *> mms;  // the matmul nodes (on the host, outs are these)
+    bool chain = false;
+    xdna_npu::group npu() const { return { keys, chain }; }
 };
+
+// GGML_XDNA_CHAIN=0: the feed-forward's two multiplies as two submissions,
+// with a host pass between them (as before chains).
+bool chains_enabled() {
+    static const bool v = [] {
+        const char * s = xdna_env("GGML_XDNA_CHAIN");
+        return !s || atoi(s) != 0;
+    }();
+    return v;
+}
 
 // One pass over a stream's rows: read the results of the group that just finished, run the small ops that
 // follow it, and encode the next group's input straight into the NPU buffer.
@@ -543,11 +558,46 @@ bool xdna_exec_piece(const ggml_cgraph * g, xdna_npu * npu, thread_pool & pool, 
                 segs.back().ops.push_back(n);
                 continue;
             }
+            // A matmul on the SwiGLU the last group's fused gate/up makes,
+            // with nothing between them and nothing else reading it, joins
+            // that group as a chain.
+            if (npu && chains_enabled() && !groups.empty() && segs.back().ops.empty() && !fused.count(n)) {
+                group & L = groups.back();
+                const ggml_tensor * glu = L.outs[0];
+                bool only = L.keys.size() == 1 && !L.chain && glu->op == GGML_OP_GLU && owner(n->src[1]) == glu &&
+                            f32_contig(n->src[1]) && row_floats(n->src[1]) == n->src[1]->ne[0];
+                for (size_t k = 0; k < P.nodes.size() && only; k++) {
+                    const ggml_tensor * o = P.nodes[k];
+                    // the SwiGLU or a view of it, read outside the piece
+                    if (owner(o) == glu && io.needed_outside(o, g)) only = false;
+                    // another op in the piece reading it
+                    for (int j = 0; j < GGML_MAX_SRC && o != n && !is_noop(o); j++)
+                        if (o->src[j] && owner(o->src[j]) == glu) only = false;
+                }
+                if (only && npu->can_chain(L.keys[0], mm_key(n->src[0])) && npu->out_width(mm_key(n->src[0])) == row_floats(n)) {
+                    done[i] = 1;
+                    L.keys.push_back(mm_key(n->src[0]));
+                    L.outs = { n };
+                    L.mms.push_back(n);
+                    L.chain = true;
+                    // the segment the group ended now starts with this result
+                    continue;
+                }
+            }
             group G;
             G.x = n->src[1];
+            const auto is_quant = [&](const ggml_tensor * m) {
+                const auto f = fused.find(m);
+                if (f == fused.end()) return npu->is_quant(mm_key(m->src[0]));
+                return npu->is_quant(xdna_npu::fused_key(xdna_npu::gate_key(m->src[0], f->second.up ? f->second.up->src[0] : m->src[0])));
+            };
+            const bool quant = npu && is_quant(n);
             for (size_t k = i; k < P.nodes.size(); k++) {
                 ggml_tensor * m = P.nodes[k];
                 if (m->op != GGML_OP_MUL_MAT || done[k] || owner(m->src[1]) != owner(G.x) || fused_up.count(m)) continue;
+                // one kernel's layout per group: a weight under the other
+                // kernel gets a group of its own
+                if (npu && k != i && is_quant(m) != quant) continue;
                 done[k] = 1;
                 auto f = fused.find(m);
                 if (f != fused.end()) {
@@ -628,8 +678,8 @@ bool xdna_exec_piece(const ggml_cgraph * g, xdna_npu * npu, thread_pool & pool, 
     const int64_t per = std::min<int64_t>(1024, std::max<int64_t>(512, ((P.T + n_streams - 1) / n_streams + 511) / 512 * 512));
     for (int64_t t0 = 0; t0 < P.T; t0 += per) S.push_back({ t0, std::min(P.T, t0 + per) });
     if (npu && !groups.empty()) {
-        std::vector<std::vector<xdna_npu::wkey>> all;
-        for (const group & G : groups) all.push_back(G.keys);
+        std::vector<xdna_npu::group> all;
+        for (const group & G : groups) all.push_back(G.npu());
         for (int si = 0; si < (int) S.size(); si++)
             if (!npu->reserve(si, all, err)) return false;
     }
@@ -644,7 +694,7 @@ bool xdna_exec_piece(const ggml_cgraph * g, xdna_npu * npu, thread_pool & pool, 
                 s.waiting = false;
             }
             const segment & seg = segs[s.seg++];
-            if (npu && seg.next >= 0 && !npu->begin(si, groups[seg.next].keys, s.t1 - s.t0, err)) return false;
+            if (npu && seg.next >= 0 && !npu->begin(si, groups[seg.next].npu(), s.t1 - s.t0, err)) return false;
             const auto h0 = std::chrono::steady_clock::now();
             const bool finite = P.run_pass(seg, groups, si, s.t0, s.t1);
             xdna_pass_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - h0).count();

@@ -205,6 +205,10 @@ void mm_bf16_mid(const bfp16ebs8 *__restrict pA, const bfp16ebs8 *__restrict pB,
 //   2: SiLU(gate) * up in fp32, rounded to bf16. The weights are ordered so
 //      that the tile's 8x8 blocks alternate: gate block, then the up block
 //      that pairs with it (bfp16_pack.h, bfp16_interleave_gate_up)
+//   3: mode 2's results as bfp16ebs8 blocks, laid out as the A tile of the
+//      multiply that takes them next (the feed-forward's down), so that
+//      multiply reads this one's output with no host step between. Needs
+//      n = 2k (pack_chain below).
 // The bf16 results are packed from the front of the tile, in the tile's own
 // block order: 8x8 block s (mode 1: block s; mode 2: pair s) at bf16 element
 // s * 64, row-major inside. The rest of the tile is left as it was. Each step
@@ -308,6 +312,26 @@ __attribute__((always_inline)) inline vb swiglu32(vf g, vf u) {
   return mul3(split(mul3(gs, us)), s).template to_vector<bfloat16>();
 }
 
+// Mode 3's packing. A pair's 8 x 8 results (rounded to bf16, as mode 2 sends
+// them) are eight bfp16ebs8 blocks along the next multiply's K, one per row:
+// 72 bytes, and the accumulator -> bfp16ebs8 conversion equals the host's
+// bfp16_encode_block (dq_q4k.cc), so the tile is byte for byte what the host
+// would pack from mode 2's output. The blocks go where the next multiply's A
+// tile has them (src/npu/bfp16_pack.h: 16-row bands, block column by block
+// column, a band's first eight rows then its second): pair (z, j) on 72-byte
+// slot (z / 2 * PJ + j) * 2 + z % 2, so every other slot along a row of
+// pairs, then back for the next row's. Slot 2s + 1 at most for pair s, which
+// starts 512 bytes (or 256 as bf16) in per pair: packing in place never
+// reaches a pair not yet read.
+constexpr int PJ = DIM_N / 16; // pairs across the tile
+using chain_stream = aie::block_vector_output_buffer_stream<bfp16ebs8, 64>;
+__attribute__((always_inline)) inline void pack_chain(chain_stream &os, unsigned s, vb lo, vb hi) {
+  aie::accum<accfloat, 64> a;
+  a.from_vector(aie::concat(lo, hi));
+  const int j = s % PJ, z = s / PJ;
+  os.push_seek(a.template to_vector<bfp16ebs8>(), j < PJ - 1 ? 1 : (z & 1) ? 0 : -(2 * PJ - 2));
+}
+
 // 32 floats -> 32 bf16, returned as the 16 floats' worth of bits they occupy
 aie::vector<float, 16> to_bf16_bits(aie::vector<float, 32> v) {
   aie::accum<accfloat, 32> a;
@@ -335,6 +359,16 @@ extern "C" void out_epilogue(float *pC, int32_t mode) {
       const vb hi = swiglu32(aie::load_v<32>(in + 32), aie::load_v<32>(in + 96));
       aie::store_v(pC + s * 32, lo.template cast_to<float>());
       aie::store_v(pC + s * 32 + 16, hi.template cast_to<float>());
+    }
+  } else if (mode == 3) {
+    ::aie::set_rounding(::aie::rounding_mode::conv_even);
+    chain_stream os((bfp16ebs8 *)pC);
+    AIE_LOOP_MIN_ITERATION_COUNT(kTile / 128)
+    for (unsigned s = 0; s < kTile / 128; s++) {
+      const float *in = pC + s * 128;
+      const vb lo = swiglu32(aie::load_v<32>(in), aie::load_v<32>(in + 64));
+      const vb hi = swiglu32(aie::load_v<32>(in + 32), aie::load_v<32>(in + 96));
+      pack_chain(os, s, lo, hi);
     }
   }
 }
@@ -367,6 +401,16 @@ extern "C" void out_epilogue_sums(float *pC, int32_t mode) {
       const vb hi = swiglu32(bf16_at(in + 16), bf16_at(in + 48));
       aie::store_v(pC + s * 32, lo.template cast_to<float>());
       aie::store_v(pC + s * 32 + 16, hi.template cast_to<float>());
+    }
+  } else if (mode == 3) {
+    ::aie::set_rounding(::aie::rounding_mode::conv_even);
+    chain_stream os((bfp16ebs8 *)pC);
+    AIE_LOOP_MIN_ITERATION_COUNT(kTile / 128)
+    for (unsigned s = 0; s < kTile / 128; s++) {
+      const float *in = pC + s * 64;
+      const vb lo = swiglu32(bf16_at(in), bf16_at(in + 32));
+      const vb hi = swiglu32(bf16_at(in + 16), bf16_at(in + 48));
+      pack_chain(os, s, lo, hi);
     }
   }
 }

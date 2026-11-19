@@ -23,7 +23,7 @@ static std::vector<uint8_t> reference_b(const std::vector<uint8_t> & raw, int64_
     std::vector<float> f((size_t) rows * K);
     ggml_get_type_traits(GGML_TYPE_Q4_K)->to_float(raw.data(), f.data(), rows * K);
     std::vector<uint8_t> b;
-    bfp16_pack_b(f.data(), rows, K, bfp16_tiling{}, b, 1);
+    bfp16_pack_b(f.data(), rows, K, BFPQ_TILE, b, 1);
     return b;
 }
 
@@ -103,7 +103,7 @@ int main() {
         std::normal_distribution<float> nd(0.0f, 1.0f);
         for (auto & v : w) v = nd(rng);
         std::vector<uint8_t> b;
-        bfp16_pack_b(w.data(), rows, K, bfp16_tiling{}, b, 1);
+        bfp16_pack_b(w.data(), rows, K, BFPQ_TILE, b, 1);
         std::vector<uint8_t> buf(qtile_bfp16_bytes(rows, K), 0xee);
         memcpy(buf.data(), b.data(), b.size());
         qtile_spread_bfp16(buf.data(), rows, K);
