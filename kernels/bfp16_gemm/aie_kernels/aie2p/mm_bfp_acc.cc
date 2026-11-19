@@ -43,84 +43,98 @@ enum class Mode { First, Mid, Last };
 // One pass over the output tile in 2x2 blocks of 8x8 sub-blocks (rows z, z+1;
 // columns j, j+1), in one flat loop: band by band (16 rows), each band's
 // blocks left to right. The A and B streams persist across blocks and are
-// moved on by 2-D seeks; each block's K steps are fully unrolled; C is read
-// and written through separate pointers. That lets the scheduler overlap a
-// block's C loads and stores with its neighbours' MMULs: 59% of the MMUL peak
-// at m = 64, k = 128, n = 64, against 53% for a loop per band and per block
-// (2,579 -> 2,496 cycles per chunk at the old 128 x 64 x 64 tile). The MACs on
-// each accumulator are the same as before, in the same order, so the results
-// are bit-identical. Each block pops 2 k/8 panels per stream, a multiple of 8,
-// so a stream is drained exactly at every seek.
+// moved on by 2-D seeks; each block's K steps are written out. Each block
+// pops 2 k/8 panels per stream, a multiple of 8, so a stream is drained
+// exactly at every seek.
 //
-// With fp32 C, C itself is the limit: a block's four accumulators fill the
-// core's accumulator registers, so the next block's C can't be loaded ahead,
-// and every block pays its C loads. Longer K chunks (more MMULs per load) are
-// what helps: 59% of the peak at m = 64, k = 128, n = 64 on one core. In the
-// whole GEMM that tile lost (10.2 TFLOPS) to data movement, which must get
-// faster first (specs/npu-qgemm/plan.md).
+// The loop is laid out so the compiler's pipeliner can overlap one block with
+// the next: C's loads and its stores walk their own pointers, each with its
+// own memory resource, and nothing but those pointers is carried from block
+// to block; the operand streams are the restrict kind, each with its own
+// resource; and on the K steps that refill a stream, B pops ahead of A. The
+// MACs on each accumulator are the same, in the same order, as the plain
+// loop's, so results are bit-identical. Measured 2026-11-18 at the
+// 128 x 64 x 64 tile (docs/results/halo-npu-qgemm-2026-11-18.json): the
+// quantized-weight GEMM's multiply falls from about 14.5 to 11.9 ms per
+// 1,536 x 17,408 x 5,120 (the GEMM from 15.5 to 13.3 ms, where its unpacking
+// core then holds it), and the BFP16 GEMM, which DRAM holds, gains 3%.
+//
+// With fp32 C, C itself is the next limit: a block's four accumulators fill
+// the core's accumulator registers, so every block pays its C loads and
+// stores (bf16 sums, half the bytes, bring the multiply to about 8 ms).
 //
 // TC: type C is read from (ignored for First); TO: type written.
 template <Mode mode, typename TC, typename TO>
 __attribute__((always_inline)) inline void
 mm_paired(const bfp16ebs8 *__restrict pA, const bfp16ebs8 *__restrict pB,
-          const TC *__restrict pCin, TO *__restrict pCout) {
+          const TC __aie_dm_resource_c *__restrict pCld,
+          TO __aie_dm_resource_c *__restrict pCst) {
   ::aie::set_rounding(::aie::rounding_mode::conv_even);
-  constexpr unsigned NJ = colB / 2;              // blocks per band
-  constexpr unsigned NB = (rowA / 2) * NJ;       // blocks
-  constexpr int PANELS = 2 * colA;               // panels a block pops per stream
-  static_assert(PANELS % 8 == 0);
+  using AStream = aie::block_vector_restrict_input_buffer_stream<bfp16ebs8, 64, aie_dm_resource::a>;
+  using BStream = aie::block_vector_restrict_input_buffer_stream<bfp16ebs8, 64, aie_dm_resource::b>;
+  using MMUL = aie::mmul<8, 8, 8, bfp16ebs8>;
+  constexpr int NJ = colB / 2;        // blocks per band
+  constexpr int NBR = rowA / 2;       // bands
+  constexpr int PANELS = 2 * colA;    // panels a block pops per stream
+  static_assert(PANELS % 8 == 0 && colA == 8);
+  constexpr int BAND = (colB + 2) * 64;  // from a band's last block to the next band's first
 
-  aie::block_vector_input_buffer_stream<bfp16ebs8, 64> sA(pA), sB(pB);
-  // After each block: A back to its band's start, except after the band's
-  // last block (on to the next band); B on to the next block's pair, except
-  // after the band's last block (back to the first).
+  AStream sA(pA);
+  BStream sB(pB);
   dims_2d_t walkA(NJ - 1, -PANELS, 0);
   dims_2d_t walkB(NJ - 1, 0, -(int)(PANELS * NJ));
-  unsigned c = 0;   // element offset of the block's first sub-block
-  unsigned jb = 0;  // the block's place in its band
+  int cL = 0, cS = 0;
 
-  AIE_LOOP_MIN_ITERATION_COUNT(NB)
-  AIE_LOOP_MAX_ITERATION_COUNT(NB)
-  for (unsigned b = 0; b < NB; b++) {
-    const TC *__restrict l1 = pCin + c;
-    const TC *__restrict l2 = l1 + colB * 64;
-    TO *__restrict o1 = pCout + c;
-    TO *__restrict o2 = o1 + colB * 64;
+#define ZEST_KSTEP_B                                                           \
+  {                                                                            \
+    aie::block_vector<bfp16ebs8, 64> A0, A1, B0, B1;                           \
+    B0 = sB.pop(); B1 = sB.pop(); A0 = sA.pop(); A1 = sA.pop();                \
+    c00.mac(A0, aie::op_transpose(B0)); c01.mac(A0, aie::op_transpose(B1));    \
+    c10.mac(A1, aie::op_transpose(B0)); c11.mac(A1, aie::op_transpose(B1));    \
+  }
+#define ZEST_KSTEP_A                                                           \
+  {                                                                            \
+    aie::block_vector<bfp16ebs8, 64> A0, A1, B0, B1;                           \
+    A0 = sA.pop(); A1 = sA.pop(); B0 = sB.pop(); B1 = sB.pop();                \
+    c00.mac(A0, aie::op_transpose(B0)); c01.mac(A0, aie::op_transpose(B1));    \
+    c10.mac(A1, aie::op_transpose(B0)); c11.mac(A1, aie::op_transpose(B1));    \
+  }
 
-    acc_t c00, c01, c10, c11;
+  for (int it = 0; it < NBR * NJ; it++) {
+#define ZEST_BODY                                                              \
+    ZEST_KSTEP_B ZEST_KSTEP_A ZEST_KSTEP_A ZEST_KSTEP_A                        \
+    ZEST_KSTEP_B ZEST_KSTEP_A ZEST_KSTEP_A ZEST_KSTEP_A                        \
+    aie::store_v(pCst, c00.template to_vector<TO>());                          \
+    aie::store_v(pCst + 64, c01.template to_vector<TO>());                     \
+    aie::store_v(pCst + colB * 64, c10.template to_vector<TO>());              \
+    aie::store_v(pCst + colB * 64 + 64, c11.template to_vector<TO>());
     if constexpr (mode == Mode::First) {
-      c00 = aie::zeros<accfloat, 64>();
-      c01 = aie::zeros<accfloat, 64>();
-      c10 = aie::zeros<accfloat, 64>();
-      c11 = aie::zeros<accfloat, 64>();
+      MMUL c00(aie::zeros<accfloat, 64>()), c01(aie::zeros<accfloat, 64>()),
+          c10(aie::zeros<accfloat, 64>()), c11(aie::zeros<accfloat, 64>());
+      ZEST_BODY
     } else {
-      c00 = acc_t(aie::load_v<64>(l1));
-      c01 = acc_t(aie::load_v<64>(l1 + 64));
-      c10 = acc_t(aie::load_v<64>(l2));
-      c11 = acc_t(aie::load_v<64>(l2 + 64));
+      MMUL c00((acc_t(aie::load_v<64>(pCld))));
+      MMUL c01((acc_t(aie::load_v<64>(pCld + 64))));
+      MMUL c10((acc_t(aie::load_v<64>(pCld + colB * 64))));
+      MMUL c11((acc_t(aie::load_v<64>(pCld + colB * 64 + 64))));
+      ZEST_BODY
     }
-
-    AIE_LOOP_UNROLL_FULL
-    for (unsigned i = 0; i < colA; ++i) {
-      const aie::block_vector<bfp16ebs8, 64> A0 = sA.pop(), A1 = sA.pop();
-      const aie::block_vector<bfp16ebs8, 64> B0 = sB.pop(), B1 = sB.pop();
-      c00 = mac_8x8_8x8T(A0, B0, c00);
-      c01 = mac_8x8_8x8T(A0, B1, c01);
-      c10 = mac_8x8_8x8T(A1, B0, c10);
-      c11 = mac_8x8_8x8T(A1, B1, c11);
-    }
-
-    aie::store_v(o1, c00.template to_vector<TO>());
-    aie::store_v(o1 + 64, c01.template to_vector<TO>());
-    aie::store_v(o2, c10.template to_vector<TO>());
-    aie::store_v(o2 + 64, c11.template to_vector<TO>());
-
     sA.seek(walkA);
     sB.seek(walkB);
-    const bool last = jb == NJ - 1;
-    c += last ? (colB + 2) * 64 : 128;
-    jb = last ? 0 : jb + 1;
+    if constexpr (mode != Mode::First)
+      pCld = add_2d_ptr(pCld, BAND, NJ - 1, cL, 128);
+    pCst = add_2d_ptr(pCst, BAND, NJ - 1, cS, 128);
   }
+#undef ZEST_BODY
+#undef ZEST_KSTEP_A
+#undef ZEST_KSTEP_B
+}
+
+template <typename T> static inline const T __aie_dm_resource_c *cld(const T *p) {
+  return (const T __aie_dm_resource_c *)p;
+}
+template <typename T> static inline T __aie_dm_resource_c *cst(T *p) {
+  return (T __aie_dm_resource_c *)p;
 }
 
 } // namespace
@@ -128,21 +142,21 @@ mm_paired(const bfp16ebs8 *__restrict pA, const bfp16ebs8 *__restrict pB,
 extern "C" {
 
 #ifdef F32_FIRST
-void mm_f32_first(bfp16ebs8 *pA, bfp16ebs8 *pB, float *pC) {
-  mm_paired<Mode::First, float, float>(pA, pB, pC, pC);
+void mm_f32_first(const bfp16ebs8 *__restrict pA, const bfp16ebs8 *__restrict pB, float *pC) {
+  mm_paired<Mode::First, float, float>(pA, pB, cld(pC), cst(pC));
 }
 #endif
 
 #ifdef F32_MID
-void mm_f32_mid(bfp16ebs8 *pA, bfp16ebs8 *pB, float *pC) {
-  mm_paired<Mode::Mid, float, float>(pA, pB, pC, pC);
+void mm_f32_mid(const bfp16ebs8 *__restrict pA, const bfp16ebs8 *__restrict pB, float *pC) {
+  mm_paired<Mode::Mid, float, float>(pA, pB, cld(pC), cst(pC));
 }
 #endif
 
 #ifdef F32_LAST
-void mm_f32_last(bfp16ebs8 *pA, bfp16ebs8 *pB, float *__restrict pC,
+void mm_f32_last(const bfp16ebs8 *__restrict pA, const bfp16ebs8 *__restrict pB, float *__restrict pC,
                  bfloat16 *__restrict pOut) {
-  mm_paired<Mode::Last, float, bfloat16>(pA, pB, pC, pOut);
+  mm_paired<Mode::Last, float, bfloat16>(pA, pB, cld(pC), cst(pOut));
 }
 #endif
 
@@ -153,32 +167,32 @@ void mm_f32_last(bfp16ebs8 *pA, bfp16ebs8 *pB, float *__restrict pC,
 // (out_epilogue), so mode 1 needs no epilogue, and mode 2's reads bf16. The
 // sums' rounding adds about as much error as bfp16's operands (specs/npu-qgemm).
 #ifdef SUMS_FIRST
-void mm_sums_first(bfp16ebs8 *pA, bfp16ebs8 *pB, float *pC, int32_t mode) {
+void mm_sums_first(const bfp16ebs8 *__restrict pA, const bfp16ebs8 *__restrict pB, float *pC, int32_t mode) {
   if (mode == 0)
-    mm_paired<Mode::First, float, float>(pA, pB, pC, pC);
+    mm_paired<Mode::First, float, float>(pA, pB, cld(pC), cst(pC));
   else
-    mm_paired<Mode::First, bfloat16, bfloat16>(pA, pB, (bfloat16 *)pC, (bfloat16 *)pC);
+    mm_paired<Mode::First, bfloat16, bfloat16>(pA, pB, cld((bfloat16 *)pC), cst((bfloat16 *)pC));
 }
 #endif
 
 #ifdef SUMS_MID
-void mm_sums_mid(bfp16ebs8 *pA, bfp16ebs8 *pB, float *pC, int32_t mode) {
+void mm_sums_mid(const bfp16ebs8 *__restrict pA, const bfp16ebs8 *__restrict pB, float *pC, int32_t mode) {
   if (mode == 0)
-    mm_paired<Mode::Mid, float, float>(pA, pB, pC, pC);
+    mm_paired<Mode::Mid, float, float>(pA, pB, cld(pC), cst(pC));
   else
-    mm_paired<Mode::Mid, bfloat16, bfloat16>(pA, pB, (bfloat16 *)pC, (bfloat16 *)pC);
+    mm_paired<Mode::Mid, bfloat16, bfloat16>(pA, pB, cld((bfloat16 *)pC), cst((bfloat16 *)pC));
 }
 #endif
 
 #ifdef BF16_FIRST
-void mm_bf16_first(bfp16ebs8 *pA, bfp16ebs8 *pB, bfloat16 *pC) {
-  mm_paired<Mode::First, bfloat16, bfloat16>(pA, pB, pC, pC);
+void mm_bf16_first(const bfp16ebs8 *__restrict pA, const bfp16ebs8 *__restrict pB, bfloat16 *pC) {
+  mm_paired<Mode::First, bfloat16, bfloat16>(pA, pB, cld(pC), cst(pC));
 }
 #endif
 
 #ifdef BF16_MID
-void mm_bf16_mid(bfp16ebs8 *pA, bfp16ebs8 *pB, bfloat16 *pC) {
-  mm_paired<Mode::Mid, bfloat16, bfloat16>(pA, pB, pC, pC);
+void mm_bf16_mid(const bfp16ebs8 *__restrict pA, const bfp16ebs8 *__restrict pB, bfloat16 *pC) {
+  mm_paired<Mode::Mid, bfloat16, bfloat16>(pA, pB, cld(pC), cst(pC));
 }
 #endif
 }

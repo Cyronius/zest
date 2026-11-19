@@ -437,6 +437,11 @@ tokens/s at 1,024 / 2,048 / 2,769 tokens, micro-batch 2,048:
 - The quantized kernel's limit is the unpacking core, 12.8 ms per 1,536-row
   feed-forward multiply (repeating the unpack 2 and 3 times a tile: 26.4 and
   39.2 ms). The multiply loop needs 11.9 ms, or about 8 with bf16 sums.
+- The multiply loop restructured for the compiler's pipeliner
+  (`mm_bfp_acc.cc`, same MACs in the same order) is in both shipped kernels:
+  bit-identical results (the 27B's KL figures unchanged to the last digit),
+  the quantized GEMM 15.5 -> 13.3 ms per 1,536-row feed-forward multiply
+  (`quant` prefill +9%), the BFP16 GEMM +3%.
 - The NPU and the GPU tie on the multiplies (BFP16 kernel 20.3-21.0 TFLOPS,
   the GPU about 21); the host's work between the NPU's multiplies is the
   loss. Next: the feed-forward block as one NPU submission.

@@ -190,7 +190,7 @@
   "auto (BFP16 copies until they stop fitting, then quantized) never used the quantized kernel on this model: BFP16 copies fill the limit first (49 layers at 20 GB, 62 at 25 GB), and from the layer that stops fitting even a quantized copy does not fit, so that layer and the rest go to the GPU. It ran exactly what bfp16 runs, and was removed; bfp16 is the default.",
   "More layers on the NPU do not help while the devices take turns: 64 layers under BFP16 (294) against 49 (298).",
   "quant pads rows: each of a piece's two streams rounds up to a multiple of 384, so 1,024 tokens run as 1,536 rows and 2,048 as 2,304.",
-  "The restructured multiply loop (kernels/bfp16_gemm/build/fast-loop-experiment.patch) is worth 16% on the quantized kernel and 3% on the BFP16 kernel, which stays at the DRAM limit. With bf16 sums as well the multiply alone falls to about 8 ms per 1,536 rows, but the GEMM stays at 13.3 ms: the unpacking core holds it (unpack_repeated).",
+  "The restructured multiply loop (since applied to mm_bfp_acc.cc and both shipped kernels, whose KL figures on the 27B are unchanged to the last printed digit) is worth 16% on the quantized kernel and 3% on the BFP16 kernel, which stays at the DRAM limit. With bf16 sums as well the multiply alone falls to about 8 ms per 1,536 rows, but the GEMM stays at 13.3 ms: the unpacking core holds it (unpack_repeated).",
   "ctest's mul-mat-npu-quant passed when the quantized kernel could not run (pointed at the BFP16 xclbin, the NPU failed and the GPU finished the test). Fixed with this record: the test fails on an NPU failure that was not injected."
  ]
 }
