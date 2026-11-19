@@ -5,6 +5,8 @@
 
 #include "bfp16_insts.h"
 #include "bfp16_pack.h"
+#include "bfpq_insts.h"
+#include "qtile_pack.h"
 #include "thread_pool.h"
 #include "xrt_shim.h"
 
@@ -31,7 +33,9 @@ using clk = std::chrono::steady_clock;
 double ms_since(clk::time_point t0) { return std::chrono::duration<double, std::milli>(clk::now() - t0).count(); }
 
 constexpr int64_t SMALL = 512, BIG = 1024;  // rows per call
+constexpr int64_t QROWS = 384, QBIG = 3 * QROWS;  // the quantized kernel's: 384, 768, 1,152
 const bfp16_tiling TILE;                      // 128 x 64 x 64, 8 columns: what the builds use
+const bfp16_tiling TILE_Q = { 128, 64, 64, 8, 3 };  // the quantized kernel: 3 multiplying rows
 const uint8_t zero_block[BFP16_BLOCK_BYTES] = {};
 
 // The kernel takes this size at both row counts.
@@ -45,6 +49,16 @@ bool fits(int64_t K, int64_t N) {
 // stays a multiple of 512.
 int64_t pad_n(int64_t N) { return (N + 511) / 512 * 512; }
 int64_t pad_f(int64_t F) { return (F + 255) / 256 * 256; }
+
+// The quantized kernel's weight format for a type: Q4_K unpacked on the NPU,
+// anything else packed here and copied through.
+int qformat(int type, int64_t K) { return type == GGML_TYPE_Q4_K && K % QTILE_K == 0 ? BFPQ_Q4K : BFPQ_BFP16; }
+
+// Bytes of a quantized-kernel copy of N (padded) x K.
+size_t qcopy_bytes(int type, int64_t K, int64_t N) {
+    return qformat(type, K) == BFPQ_Q4K ? (size_t) (N / QTILE_ROWS) * (size_t) (K / QTILE_K) * QTILE_Q4K_BYTES
+                                        : qtile_bfp16_bytes(N, K);
+}
 
 bool out16_enabled() {
     static const bool v = [] {
@@ -70,7 +84,8 @@ bool all_finite(const float * v, int64_t n) {
 // 2), of which the first `n_out` are kept. False if any of them is NaN or
 // infinite: a weight copy pushed out of the NPU's memory comes back damaged,
 // silently, and its results come out NaN (Qwen3.8-27B, 2026-10-03).
-bool read_row(const float * c, int64_t M, int64_t N, int mode, int64_t r, int64_t n_out, float * row) {
+bool read_row(const float * c, int64_t M, int64_t N, int mode, int64_t r, int64_t n_out, float * row,
+              const bfp16_tiling & tile) {
     const int64_t n_all = mode == 2 ? N / 2 : N;
     float * dst = row;
     thread_local std::vector<float> padded;
@@ -78,8 +93,8 @@ bool read_row(const float * c, int64_t M, int64_t N, int mode, int64_t r, int64_
         padded.resize((size_t) n_all);
         dst = padded.data();
     }
-    if (mode) bfp16_c16_row(c, M, N, TILE, mode, r, dst);
-    else bfp16_c_row(c, M, N, TILE, r, N, dst);
+    if (mode) bfp16_c16_row(c, M, N, tile, mode, r, dst);
+    else bfp16_c_row(c, M, N, tile, r, N, dst);
     if (dst != row) memcpy(row, dst, (size_t) n_out * sizeof(float));
     return all_finite(row, n_out);
 }
@@ -132,6 +147,25 @@ const std::string & xdna_xclbin() {
     }();
     return path;
 }
+
+const std::string & xdna_qxclbin() {
+    static const std::string path = []() -> std::string {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        const char * s = xdna_env("GGML_XDNA_QKERNELS");
+        const fs::path p = s && *s ? fs::u8path(s) : xdna_module_dir() / "bfpq_gemm.xclbin";
+        if (fs::is_regular_file(p, ec)) return p.u8string();
+        if (fs::is_regular_file(p / "final.xclbin", ec)) return (p / "final.xclbin").u8string();
+        return {};
+    }();
+    return path;
+}
+
+bool xdna_npu_has_qshape(int type, int64_t K, int64_t N) {
+    return !xdna_qxclbin().empty() && bfpq_insts_fits(QBIG, K, pad_n(N), qformat(type, K));
+}
+
+double xdna_npu_qcopy_bytes(int type, int64_t K, int64_t N) { return (double) qcopy_bytes(type, K, pad_n(N)); }
 
 // One small multiply on the NPU, checked against the same multiply done here:
 // whether this NPU runs the kernel right, not just loads it. That decides it,
@@ -316,22 +350,46 @@ bool xdna_npu::init(int n_threads, std::string & err) {
     return true;
 }
 
-// A size's instruction stream, made once. The first also opens the device
-// with the xclbin.
-int xdna_npu::shape(int64_t M, int64_t K, int64_t N, int mode, std::string & err) {
-    const auto key = std::make_tuple(M, K, N, mode);
-    auto it = shapes_.find(key);
-    if (it != shapes_.end()) return it->second;
+int64_t xdna_npu::call_rows(const weight & w, int64_t rows) {
+    if (w.q) return std::max<int64_t>(1, (rows + QROWS - 1) / QROWS) * QROWS;
+    return rows > SMALL ? BIG : SMALL;
+}
+
+int xdna_npu::call_shape(const weight & w, int64_t rows) {
+    return w.q ? w.shapes[call_rows(w, rows) / QROWS - 1] : w.shapes[rows > SMALL ? 1 : 0];
+}
+
+const bfp16_tiling & xdna_npu::tiling(const weight & w) { return w.q ? TILE_Q : TILE; }
+
+// The device with the BFP16 kernel, opened once; with `quant` also the
+// quantized-weight kernel.
+bool xdna_npu::open(std::string & err, bool quant) {
     if (!opened_) {
-        if (!npu_->open(xdna_xclbin(), err)) return -1;
+        if (!npu_->open(xdna_xclbin(), err)) return false;
         opened_ = true;
     }
-    const std::vector<uint32_t> words = bfp16_insts(M, K, N, mode);
+    if (quant && qkernel_ < 0) {
+        if (xdna_qxclbin().empty()) { err = "no bfpq_gemm.xclbin (GGML_XDNA_QKERNELS)"; return false; }
+        qkernel_ = npu_->open_kernel(xdna_qxclbin(), err);
+        if (qkernel_ < 0) return false;
+    }
+    return true;
+}
+
+// A size's instruction stream, made once: the BFP16 kernel's (fmt -1) or
+// the quantized kernel's in weight format fmt.
+int xdna_npu::shape(int64_t M, int64_t K, int64_t N, int mode, std::string & err, int fmt) {
+    const auto key = std::make_tuple(M, K, N, mode, fmt);
+    auto it = shapes_.find(key);
+    if (it != shapes_.end()) return it->second;
+    if (!open(err, fmt >= 0)) return -1;
+    const std::vector<uint32_t> words = fmt < 0 ? bfp16_insts(M, K, N, mode) : bfpq_insts(M, K, N, mode, fmt);
     if (words.empty()) {
         err = "the kernel doesn't take " + std::to_string(M) + "x" + std::to_string(K) + "x" + std::to_string(N);
         return -1;
     }
-    const int h = npu_->add_shape(words, M, K, N, err);
+    const int h = fmt < 0 ? npu_->add_shape(words, M, K, N, err)
+                          : npu_->add_shape(words, M, K, N, err, qkernel_, qcopy_bytes(fmt == BFPQ_Q4K ? GGML_TYPE_Q4_K : -1, K, N));
     if (h >= 0) shapes_[key] = h;
     return h;
 }
@@ -344,19 +402,28 @@ void xdna_npu::unpack_row(const void * raw, ggml_type type, int64_t r, int64_t K
 
 // Decode one GGUF row at a time into the kernel's B layout. The NPU buffer
 // itself is the destination, so no full float32 or packed host copy is kept.
-bool xdna_npu::add_packed(const wkey & key, int64_t N, int64_t n_out, int mode,
-                          const bfp16_row_loader & load_row, std::string & err) {
+// Under the quantized kernel, Q4_K rows are re-laid as they are instead, and
+// other types packed and then spread into its copy-through objects.
+bool xdna_npu::add_packed(const wkey & key, int64_t N, int64_t n_out, int mode, const bfp16_row_loader & load_row,
+                          std::string & err, bool quant, const std::function<const uint8_t *(int64_t)> & quant_src) {
     weight w;
     w.K = key.K;
     w.N = N;
     w.mode = mode;
     w.N_out = n_out;
+    w.q = quant;
+    const int type = key.type >= 1000 ? key.type - 1000 : key.type;  // a fused key's type is offset
+    const int fmt = quant ? qformat(type, key.K) : -1;
+    if (fmt == BFPQ_Q4K && !quant_src) { err = "Q4_K rows missing"; return false; }
     auto phase = clk::now();
-    w.shape_small = shape(SMALL, key.K, N, mode, err);
-    w.shape_big = shape(BIG, key.K, N, mode, err);
+    bool ok = true;
+    if (quant)
+        for (int i = 0; i < 3 && ok; i++) ok = (w.shapes[i] = shape((i + 1) * QROWS, key.K, N, mode, err, fmt)) >= 0;
+    else
+        for (int i = 0; i < 2 && ok; i++) ok = (w.shapes[i] = shape(i ? BIG : SMALL, key.K, N, mode, err)) >= 0;
     times_.weight_shape_ms += ms_since(phase);
-    if (w.shape_small < 0 || w.shape_big < 0) return false;
-    const size_t bytes = (size_t) (N * key.K / 8) * BFP16_BLOCK_BYTES;
+    if (!ok) return false;
+    const size_t bytes = quant ? qcopy_bytes(type, key.K, N) : (size_t) (N * key.K / 8) * BFP16_BLOCK_BYTES;
     phase = clk::now();
     w.handle = npu_->add_uninitialized_weights(bytes, err);
     if (w.handle < 0) return false;
@@ -364,9 +431,13 @@ bool xdna_npu::add_packed(const wkey & key, int64_t N, int64_t n_out, int mode,
     times_.weight_alloc_ms += ms_since(phase);
     if (!packed) { err = "cannot map the weight buffer"; return false; }
     phase = clk::now();
-    bfp16_pack_b_rows_into(N, key.K, TILE, packed,
-                           [&](int64_t n, const std::function<void(int64_t, int64_t)> & fn) { pool_->parallel_for(n, fn); },
-                           load_row);
+    const auto runner = [&](int64_t n, const std::function<void(int64_t, int64_t)> & fn) { pool_->parallel_for(n, fn); };
+    if (fmt == BFPQ_Q4K) {
+        qtile_pack_q4k_rows(N, key.K, packed, runner, quant_src);
+    } else {
+        bfp16_pack_b_rows_into(N, key.K, TILE, packed, runner, load_row);
+        if (fmt == BFPQ_BFP16) qtile_spread_bfp16(packed, N, key.K);
+    }
     times_.weight_encode_ms += ms_since(phase);
     phase = clk::now();
     if (!npu_->buffer_sync(w.handle, 0, bytes, err)) return false;
@@ -375,7 +446,7 @@ bool xdna_npu::add_packed(const wkey & key, int64_t N, int64_t n_out, int mode,
     return true;
 }
 
-bool xdna_npu::add_weight(const wkey & key, const void * raw, std::string & err) {
+bool xdna_npu::add_weight(const wkey & key, const void * raw, std::string & err, bool quant) {
     const clk::time_point t0 = clk::now();
     const int64_t N = pad_n(key.N);
     const int mode = out16_enabled() ? 1 : 0;
@@ -383,20 +454,32 @@ bool xdna_npu::add_weight(const wkey & key, const void * raw, std::string & err)
         if (r < key.N) unpack_row(raw, (ggml_type) key.type, r, key.K, row);
         else std::fill_n(row, key.K, 0.0f);
     };
-    const bool ok = add_packed(key, N, key.N, mode, load_row, err);
+    const size_t row_bytes = ggml_row_size((ggml_type) key.type, key.K);
+    const auto quant_src = [&](int64_t r) -> const uint8_t * {
+        return r < key.N ? (const uint8_t *) raw + r * row_bytes : nullptr;
+    };
+    const bool ok = add_packed(key, N, key.N, mode, load_row, err, quant, quant_src);
     times_.pack_ms += ms_since(t0);
     return ok;
 }
 
-bool xdna_npu::add_fused(const wkey & gate, const void * gate_raw, const void * up_raw, std::string & err) {
+bool xdna_npu::add_fused(const wkey & gate, const void * gate_raw, const void * up_raw, std::string & err, bool quant) {
     const clk::time_point t0 = clk::now();
     const int64_t F = gate.N, K = gate.K, Fp = pad_f(F);
+    // output tile rows 16i .. 16i + 7 are gate rows 8i .., the next 8 up's
+    const auto source = [&](int64_t r) { return (r / 16) * 8 + r % 8; };
     const auto load_row = [&](int64_t r, float * row) {
-        const int64_t source_row = (r / 16) * 8 + r % 8;
+        const int64_t source_row = source(r);
         if (source_row >= F) { std::fill_n(row, K, 0.0f); return; }
         unpack_row(r % 16 < 8 ? gate_raw : up_raw, (ggml_type) gate.type, source_row, K, row);
     };
-    const bool ok = add_packed(fused_key(gate), 2 * Fp, F, 2, load_row, err);
+    const size_t row_bytes = ggml_row_size((ggml_type) gate.type, K);
+    const auto quant_src = [&](int64_t r) -> const uint8_t * {
+        const int64_t source_row = source(r);
+        if (source_row >= F) return nullptr;
+        return (const uint8_t *) (r % 16 < 8 ? gate_raw : up_raw) + source_row * row_bytes;
+    };
+    const bool ok = add_packed(fused_key(gate), 2 * Fp, F, 2, load_row, err, quant, quant_src);
     times_.pack_ms += ms_since(t0);
     return ok;
 }
@@ -406,23 +489,25 @@ bool xdna_npu::mul_mat(const wkey & key, const float * x, int64_t T, float * y, 
     const int64_t K = w.K, N = w.N;
     const int n = (int) ((T + BIG - 1) / BIG);
     auto rows_of = [&](int j) { return std::min(BIG, T - j * BIG); };
-    auto m_of = [&](int j) { return rows_of(j) > SMALL ? BIG : SMALL; };
+    auto m_of = [&](int j) { return call_rows(w, rows_of(j)); };
+    const int64_t m_max = w.q ? QBIG : BIG;
 
     clk::time_point t0 = clk::now();
     std::vector<int> shapes;
-    for (int j = 0; j < n; j++) shapes.push_back(m_of(j) == BIG ? w.shape_big : w.shape_small);
-    if (!batch_->reserve(n, (size_t) (BIG * K / 8) * BFP16_BLOCK_BYTES, 0, (size_t) (BIG * N) * sizeof(float), err)) return false;
+    for (int j = 0; j < n; j++) shapes.push_back(call_shape(w, rows_of(j)));
+    if (!batch_->reserve(n, (size_t) (m_max * K / 8) * BFP16_BLOCK_BYTES, 0, (size_t) (m_max * N) * sizeof(float), err))
+        return false;
     if (!batch_->prepare(shapes, err, { w.handle })) return false;
     // every call's rows, encoded straight into its buffer; rows past the
     // prompt as zeros
-    pool_->parallel_for((int64_t) n * BIG, [&](int64_t i0, int64_t i1) {
+    pool_->parallel_for((int64_t) n * m_max, [&](int64_t i0, int64_t i1) {
         for (int64_t i = i0; i < i1; i++) {
-            const int j = (int) (i / BIG);
-            const int64_t r = i % BIG;
+            const int j = (int) (i / m_max);
+            const int64_t r = i % m_max;
             if (r >= m_of(j)) continue;
             uint8_t * A = batch_->a(j);
             const int64_t t = j * BIG + r;
-            if (t < T) {
+            if (r < rows_of(j)) {
                 const float * row = x + t * K;
                 bfp16_a_row(r, K, TILE, [&](int64_t cb, size_t off) { bfp16_encode_block(row + cb * 8, A + off); });
             } else {
@@ -444,7 +529,7 @@ bool xdna_npu::mul_mat(const wkey & key, const float * x, int64_t T, float * y, 
     pool_->parallel_for(T, [&](int64_t t0r, int64_t t1r) {
         for (int64_t t = t0r; t < t1r; t++) {
             const int j = (int) (t / BIG);
-            if (!read_row(batch_->c(j), m_of(j), N, w.mode, t % BIG, w.N_out, y + t * w.N_out)) bad = true;
+            if (!read_row(batch_->c(j), m_of(j), N, w.mode, t % BIG, w.N_out, y + t * w.N_out, tiling(w))) bad = true;
         }
     });
     times_.decode_ms += ms_since(t0);
@@ -472,9 +557,10 @@ bool xdna_npu::reserve(int stream, const std::vector<std::vector<wkey>> & groups
     for (const auto & keys : groups)
         for (size_t i = 0; i < keys.size(); i++) {
             const weight & w = weights_.at(keys[i]);
-            a_bytes = std::max(a_bytes, (size_t) (BIG * w.K / 8) * BFP16_BLOCK_BYTES);
+            const int64_t m = w.q ? QBIG : BIG;
+            a_bytes = std::max(a_bytes, (size_t) (m * w.K / 8) * BFP16_BLOCK_BYTES);
             if (c_bytes.size() <= i) c_bytes.resize(i + 1, 0);
-            c_bytes[i] = std::max(c_bytes[i], (size_t) (BIG * w.N) * sizeof(float));
+            c_bytes[i] = std::max(c_bytes[i], (size_t) (m * w.N) * sizeof(float));
         }
     f.readable = false;  // growing a buffer loses what it held
     if (f.c_cap.size() < c_bytes.size()) f.c_cap.resize(c_bytes.size(), 0);
@@ -488,13 +574,15 @@ bool xdna_npu::reserve(int stream, const std::vector<std::vector<wkey>> & groups
 bool xdna_npu::begin(int stream, const std::vector<wkey> & keys, int64_t rows, std::string & err) {
     if (rows > BIG || keys.empty()) { err = "bad group"; return false; }
     flight & f = flight_for(stream);
-    const int64_t M = rows > SMALL ? BIG : SMALL;
     const int64_t K = weights_.at(keys[0]).K;
     std::vector<const weight *> ws;
     std::vector<int> shapes, handles;
+    std::vector<int64_t> Ms;
+    int64_t m_max = 0;
     for (size_t i = 0; i < keys.size(); i++) {
         const weight & w = weights_.at(keys[i]);
         if (w.K != K) { err = "group weights differ in K"; return false; }
+        const int64_t M = call_rows(w, rows);
         // preparing a call whose buffer is too small moves it, and the
         // previous group's output with it
         if (f.readable && i < f.w_out.size() && (i >= f.c_cap.size() || (size_t) (M * w.N) * sizeof(float) > f.c_cap[i])) {
@@ -502,17 +590,20 @@ bool xdna_npu::begin(int stream, const std::vector<wkey> & keys, int64_t rows, s
             return false;
         }
         ws.push_back(&w);
-        shapes.push_back(M == BIG ? w.shape_big : w.shape_small);
+        shapes.push_back(call_shape(w, rows));
         handles.push_back(w.handle);
+        Ms.push_back(M);
+        m_max = std::max(m_max, M);
     }
     const clk::time_point t0 = clk::now();
     if (!f.batch->prepare(shapes, err, handles)) return false;
     f.w = std::move(ws);
+    f.M = std::move(Ms);
     f.rows = rows;
-    f.M = M;
+    f.M_max = m_max;
     // rows past the prompt: zeros (the buffer held other data)
     uint8_t * A = f.batch->a(0);
-    pool_->parallel_for(M - rows, [&](int64_t i0, int64_t i1) {
+    pool_->parallel_for(m_max - rows, [&](int64_t i0, int64_t i1) {
         for (int64_t r = rows + i0; r < rows + i1; r++)
             bfp16_a_row(r, K, TILE, [&](int64_t, size_t off) { memcpy(A + off, zero_block, sizeof(zero_block)); });
     });
@@ -535,9 +626,10 @@ bool xdna_npu::submit(int stream, std::string & err) {
     if (injected_failure(err)) return false;
     flight & f = flights_.at(stream);
     clk::time_point t0 = clk::now();
-    // every call reads the same input
-    const size_t a_bytes = (size_t) (f.M * f.w[0]->K / 8) * BFP16_BLOCK_BYTES;
-    for (size_t i = 1; i < f.w.size(); i++) memcpy(f.batch->a((int) i), f.batch->a(0), a_bytes);
+    // every call reads the same input (A's layout doesn't depend on the
+    // rows a call runs, so the longest call's covers every one)
+    for (size_t i = 1; i < f.w.size(); i++)
+        memcpy(f.batch->a((int) i), f.batch->a(0), (size_t) (f.M[i] * f.w[0]->K / 8) * BFP16_BLOCK_BYTES);
     times_.encode_ms += ms_since(t0);
     f.readable = false;
     t0 = clk::now();
@@ -554,7 +646,7 @@ bool xdna_npu::wait(int stream, std::string & err) {
     times_.npu_ms += ms_since(t0);  // what the host actually waited
     if (injected_nan())
         for (size_t k = 0; k < f.w.size(); k++)
-            memset((void *) f.batch->c((int) k), 0xff, (size_t) (f.M * f.w[k]->N) * sizeof(float));
+            memset((void *) f.batch->c((int) k), 0xff, (size_t) (f.M[k] * f.w[k]->N) * sizeof(float));
     f.w_out = f.w;
     f.M_out = f.M;
     f.readable = true;
@@ -564,7 +656,7 @@ bool xdna_npu::wait(int stream, std::string & err) {
 bool xdna_npu::decode_row(int stream, int k, int64_t r, float * row) const {
     const flight & f = flights_[stream];
     const weight & w = *f.w_out[k];
-    return read_row(f.batch->c(k), f.M_out, w.N, w.mode, r, w.N_out, row);
+    return read_row(f.batch->c(k), f.M_out[k], w.N, w.mode, r, w.N_out, row, tiling(w));
 }
 
 const char * xdna_npu::not_finite_error() { return NOT_FINITE; }

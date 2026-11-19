@@ -10,6 +10,11 @@
 // Run with GGML_XDNA_NAN_AFTER=0 (ctest's mul-mat-npu-nan), every NPU result
 // comes back as NaN, and the backend has to catch that and compute it again.
 //
+// When the NPU fails the GPU finishes the work, with the right answers, so
+// the answers alone don't show the NPU ran. The backend's log does: the test
+// fails if it reports an NPU failure that wasn't injected (a kernel that
+// didn't load or run), or none when one was.
+//
 // Traces: XDNA-MUL-MAT-AGREES, XDNA-NPU-RESULT-CHECK
 
 #include "ggml.h"
@@ -19,6 +24,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <random>
 #include <vector>
@@ -124,7 +130,20 @@ static std::vector<double> reference(const case_spec & c,
     return out;
 }
 
+// Whether the backend said the NPU failed. Everything is still printed.
+static bool g_npu_failed = false;
+static void on_log(ggml_log_level, const char * text, void *) {
+    if (strstr(text, "the NPU failed")) g_npu_failed = true;
+    fputs(text, stderr);
+}
+
+static bool env_set(const char * name) {
+    const char * s = getenv(name);
+    return s && *s;
+}
+
 int main() {
+    ggml_log_set(on_log, NULL);
     ggml_backend_load_all();
 
     ggml_backend_dev_t dev_xdna = ggml_backend_dev_by_name("XDNA0");
@@ -202,6 +221,13 @@ int main() {
 
     ggml_backend_free(xdna);
     ggml_backend_free(cpu);
+
+    const bool injected = env_set("GGML_XDNA_FAIL_AFTER") || env_set("GGML_XDNA_NAN_AFTER");
+    if (g_npu_failed != injected) {
+        printf("FAIL the NPU %s\n", injected ? "was made to fail, and the backend didn't say so"
+                                             : "failed, and the GPU finished its work");
+        failures++;
+    }
 
     printf("%s\n", failures ? "FAILED" : "ALL PASS");
     return failures ? 1 : 0;

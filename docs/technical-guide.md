@@ -614,6 +614,8 @@ An empty value counts as unset.
 | `GGML_XDNA_MIN_MFLOP` | 256 | the smallest multiply the NPU takes, in millions of operations |
 | `GGML_XDNA_COPY_AT_LOAD` | 1 | 1 completes the NPU's weight copies before model load returns; 0 builds them during the first prompt |
 | `GGML_XDNA_MAX_COPY_GB` | memory free at load, less 4 GB or a tenth of memory, at most 20 | the most memory, in GB, the NPU's weight copies may take; 0 keeps the NPU out (`zest --memory-gb` sets it) |
+| `GGML_XDNA_WEIGHTS` | bfp16 | which NPU kernel the weight copies are for: `bfp16` (9 bits a weight), or `quant` (Q4_K at 4.75 bits, unpacked on the NPU: about half the memory, so more layers fit, but 20-45% slower prefill on Qwen3.8-27B) |
+| `GGML_XDNA_QKERNELS` | `bfpq_gemm.xclbin` next to the add-on | another xclbin for the quantized-weight kernel |
 | `GGML_XDNA_BLOCKS` | 1 | 0 takes only the multiplies, not the steps between them |
 | `GGML_XDNA_STREAMS` | 2 | how many parts a piece is split into, so the CPU and NPU overlap |
 | `GGML_XDNA_N_THREADS` | all cores | CPU threads for the add-on's own work |

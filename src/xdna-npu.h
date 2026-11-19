@@ -7,12 +7,21 @@
 // GGML_XDNA_KERNELS names the xclbin: the file itself, a directory holding
 // final.xclbin, or a directory of per-size builds (any one's final.xclbin).
 // A call covers 1024 prompt rows, or 512 for a short remainder.
+//
+// A weight's copy can instead live under the kernel on quantized weights
+// (whole_array_bfpq, npu/bfpq_insts.h), at about half the bytes for Q4_K:
+// Q4_K is re-laid for the NPU to unpack (npu/qtile_pack.h), other types are
+// packed as BFP16 and copied through. Its calls run 384, 768 or 1,152 rows.
+// It is its own xclbin and hardware context (bfpq_gemm.xclbin, or
+// GGML_XDNA_QKERNELS), and switching contexts costs ~2.4 ms, so a model's
+// weights all go under one kernel (ggml-zest.cpp, GGML_XDNA_WEIGHTS).
 #pragma once
 
 #include "ggml.h"
 #include "npu_bfp16.h"
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -32,6 +41,12 @@ const std::string & xdna_xclbin();
 bool xdna_npu_usable(std::string & why);
 // Whether the kernel takes a weight of K x N at both row counts.
 bool xdna_npu_has_shape(int64_t K, int64_t N);
+// The quantized-weight kernel's xclbin, as xdna_xclbin; empty when there's none.
+const std::string & xdna_qxclbin();
+// Whether a weight of this type and size can have a quantized-kernel copy,
+// and its bytes (N as the kernel runs it).
+bool xdna_npu_has_qshape(int type, int64_t K, int64_t N);
+double xdna_npu_qcopy_bytes(int type, int64_t K, int64_t N);
 // Bytes the NPU's buffers may lock in all (Linux's memlock limit, when XRT's buffers count against it); negative: no limit.
 double xdna_npu_lock_limit();
 // Kept back from that limit for the NPU's buffers other than weight copies.
@@ -55,8 +70,9 @@ public:
     // Builds it from the weight's raw ggml bytes: each row is dequantized with
     // ggml and encoded directly into its mapped NPU buffer. It runs in the
     // 16-bit output mode where that's built (half the bytes to read back;
-    // GGML_XDNA_OUT16=0 keeps float32).
-    bool add_weight(const wkey & key, const void * raw, std::string & err);
+    // GGML_XDNA_OUT16=0 keeps float32). `quant`: under the quantized-weight
+    // kernel instead (xdna_npu_has_qshape must hold).
+    bool add_weight(const wkey & key, const void * raw, std::string & err, bool quant = false);
 
     // A gate and an up weight fused, for SiLU(gate) * up computed on the NPU
     // (the kernel's output mode 2): rows interleaved so each output tile pairs
@@ -68,7 +84,10 @@ public:
         return { gate->buffer, gate->data, (int) gate->type, gate->ne[0], gate == up ? gate->ne[1] / 2 : gate->ne[1] };
     }
     static bool has_fused_shape(int64_t K, int64_t F);
-    bool add_fused(const wkey & gate, const void * gate_raw, const void * up_raw, std::string & err);
+    bool add_fused(const wkey & gate, const void * gate_raw, const void * up_raw, std::string & err,
+                   bool quant = false);
+    // Whether a weight added above lives under the quantized-weight kernel.
+    bool is_quant(const wkey & key) const { return weights_.at(key).q; }
 
     // Output values a row for a weight added above (N, or N/2 fused).
     int64_t out_width(const wkey & key) const { return weights_.at(key).N_out; }
@@ -114,13 +133,22 @@ public:
 private:
     struct weight {
         int handle = -1;
-        int shape_small = -1, shape_big = -1;  // M = 512 and M = 1024
+        // per call size: M = 512 and 1,024; quantized, M = 384, 768, 1,152
+        int shapes[3] = { -1, -1, -1 };
         int64_t K = 0, N = 0, N_out = 0;       // N as the kernel runs it (padded); N_out real values a row
         int mode = 0;                          // output mode: 0 float32, 1 bf16, 2 SiLU(gate) * up in bf16
+        bool q = false;                        // under the quantized-weight kernel
     };
-    int shape(int64_t M, int64_t K, int64_t N, int mode, std::string & err);
-    bool add_packed(const wkey & key, int64_t N, int64_t n_out, int mode,
-                    const bfp16_row_loader & load_row, std::string & err);
+    // The rows a call on `w` runs for `rows` prompt rows, and its shape.
+    static int64_t call_rows(const weight & w, int64_t rows);
+    static int call_shape(const weight & w, int64_t rows);
+    static const bfp16_tiling & tiling(const weight & w);
+    int shape(int64_t M, int64_t K, int64_t N, int mode, std::string & err, int fmt = -1);
+    bool open(std::string & err, bool quant);
+    // `quant_src`: for a Q4_K weight under the quantized kernel, row r's
+    // GGUF bytes (nullptr: zeros); else rows come through `load_row`.
+    bool add_packed(const wkey & key, int64_t N, int64_t n_out, int mode, const bfp16_row_loader & load_row,
+                    std::string & err, bool quant = false, const std::function<const uint8_t *(int64_t)> & quant_src = {});
     static void unpack_row(const void * raw, ggml_type type, int64_t r, int64_t K, float * dst);
 
     std::unique_ptr<npu_bfp16> npu_;
@@ -128,7 +156,8 @@ private:
     struct flight {
         std::unique_ptr<npu_bfp16::batch> batch;
         std::vector<const weight *> w, w_out;  // the group being filled; the one whose outputs are readable
-        int64_t rows = 0, M = 0, M_out = 0;
+        std::vector<int64_t> M, M_out;         // each call's rows
+        int64_t rows = 0, M_max = 0;
         std::vector<size_t> c_cap;             // output bytes reserved per call
         bool readable = false;
     };
@@ -136,7 +165,8 @@ private:
     std::vector<flight> flights_;  // by stream
     std::unique_ptr<thread_pool> pool_;
     std::map<wkey, weight> weights_;
-    std::map<std::tuple<int64_t, int64_t, int64_t, int>, int> shapes_;  // (M, K, N, mode) -> handle
+    std::map<std::tuple<int64_t, int64_t, int64_t, int, int>, int> shapes_;  // (M, K, N, mode, format) -> handle
     bool opened_ = false;
+    int qkernel_ = -1;  // npu_'s quantized-weight kernel, once opened
     times times_;
 };

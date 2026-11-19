@@ -50,6 +50,11 @@ struct scratch {
   alignas(64) bfloat16 eR[8][4][64];  // per row group: dh, dl, mh, ml
 };
 constexpr int DQ_Q4K_SCRATCH = sizeof(scratch);
+// dq_weights' state, after it: the next k-tile of the current tile
+struct state {
+  alignas(64) int32_t j;
+};
+constexpr int DQ_SCRATCH = DQ_Q4K_SCRATCH + sizeof(state);
 
 // lanes 0..7 of v, each repeated 8 times
 template <typename T> __attribute__((always_inline)) inline aie::vector<T, 64> expand8(aie::vector<T, 64> v) {
@@ -66,7 +71,9 @@ __attribute__((always_inline)) inline vb plus128(aie::vector<uint8_t, 64> v) {
 
 } // namespace
 
-extern "C" void dq_q4k(const uint8_t *__restrict tile, bfp16ebs8 *__restrict out, uint8_t *__restrict scr, int32_t j) {
+// k-tile j of a tile -> its B tile
+__attribute__((always_inline)) inline void q4k_ktile(const uint8_t *__restrict tile, bfp16ebs8 *__restrict out,
+                                                     uint8_t *__restrict scr, int32_t j) {
 #ifdef DQ_NOP  // (measurements: data movement alone)
   return;
 #endif
@@ -121,3 +128,33 @@ extern "C" void dq_q4k(const uint8_t *__restrict tile, bfp16ebs8 *__restrict out
     }
   }
 }
+
+extern "C" {
+
+// One k-tile (j = 0..3) of a Q4_K tile; k-tile 0 of a tile first.
+void dq_q4k(const uint8_t *__restrict tile, bfp16ebs8 *__restrict out, uint8_t *__restrict scr, int32_t j) {
+  q4k_ktile(tile, out, scr, j);
+}
+
+// The GEMM's unpacking core: the next B tile from the current 9,728-byte
+// weight object, in this dispatch's format, which the call counts itself
+// (scratch: DQ_SCRATCH bytes, zero at the start):
+//   0  a Q4_K tile (src/npu/qtile_pack.h): four k-tiles
+//   1  two B tiles already in bfp16ebs8 (4,608 bytes each, then 512 unused):
+//      weights of a type without an unpacker, copied through
+void dq_weights(const uint8_t *__restrict tile, bfp16ebs8 *__restrict out, uint8_t *__restrict scr, int32_t fmt) {
+  state &T = *(state *)(scr + DQ_Q4K_SCRATCH);
+  const int32_t j = T.j;
+  if (fmt == 0) {
+    q4k_ktile(tile, out, scr, j);
+    T.j = (j + 1) & 3;
+  } else {
+    const aie::vector<uint8_t, 64> *src = (const aie::vector<uint8_t, 64> *)(tile + j * 4608);
+    aie::vector<uint8_t, 64> *dst = (aie::vector<uint8_t, 64> *)out;
+    AIE_LOOP_MIN_ITERATION_COUNT(72)
+    for (int i = 0; i < 4608 / 64; i++) dst[i] = src[i];
+    T.j = (j + 1) & 1;
+  }
+}
+
+} // extern "C"

@@ -96,6 +96,26 @@ int main() {
         failures += !ok;
     }
 
+    // other types, copied through: B's tile pairs, each in its own object
+    {
+        const int64_t rows = 1024, K = 384;
+        std::vector<float> w((size_t) rows * K);
+        std::normal_distribution<float> nd(0.0f, 1.0f);
+        for (auto & v : w) v = nd(rng);
+        std::vector<uint8_t> b;
+        bfp16_pack_b(w.data(), rows, K, bfp16_tiling{}, b, 1);
+        std::vector<uint8_t> buf(qtile_bfp16_bytes(rows, K), 0xee);
+        memcpy(buf.data(), b.data(), b.size());
+        qtile_spread_bfp16(buf.data(), rows, K);
+        bool ok = buf.size() == (size_t) rows / 64 * (K / 128) * QTILE_Q4K_BYTES;
+        for (size_t i = 0; ok && i < buf.size() / QTILE_Q4K_BYTES; i++) {
+            ok = memcmp(buf.data() + i * QTILE_Q4K_BYTES, b.data() + i * 9216, 9216) == 0;
+            for (size_t k = 9216; ok && k < QTILE_Q4K_BYTES; k++) ok = buf[i * QTILE_Q4K_BYTES + k] == 0;
+        }
+        printf("%s B tiles spread into copy-through objects\n", ok ? "PASS" : "FAIL");
+        failures += !ok;
+    }
+
     printf(failures ? "FAILED\n" : "ALL PASS\n");
     return failures ? 1 : 0;
 }

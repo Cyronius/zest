@@ -4,11 +4,14 @@
 // descriptor can give plausible-looking wrong output, so this is the check.
 // To add a size, build it with kernels/bfp16_gemm/build.ps1 (-Design
 // whole_array_bfp_rtp -Tm 128 -Tk 64 -Tn 64 -DesignArgs --c-tiled) and copy
-// its insts.bin here.
+// its insts.bin here. q4k_<M>x<K>x<N>_m<mode>.bin and qcopy_... are the
+// quantized-weight design's in its two weight formats (bfpq_insts.h;
+// build-linux.sh with DESIGN=q4k, and FMT=1 for qcopy).
 //
 // Traces: XDNA-INSTS-GEN
 
 #include "bfp16_insts.h"
+#include "bfpq_insts.h"
 
 #include <array>
 #include <cstdio>
@@ -24,12 +27,15 @@ int main(int argc, char ** argv) {
         long long M, K, N;
         int mode;
         const std::string name = e.path().filename().string();
-        if (sscanf(name.c_str(), "%lldx%lldx%lld_m%d.bin", &M, &K, &N, &mode) != 4) continue;
+        const bool q4k = name.rfind("q4k_", 0) == 0, qcopy = name.rfind("qcopy_", 0) == 0;
+        if (sscanf(name.c_str() + (q4k ? 4 : qcopy ? 6 : 0), "%lldx%lldx%lld_m%d.bin", &M, &K, &N, &mode) != 4) continue;
         std::ifstream f(e.path(), std::ios::binary);
         std::vector<char> bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
         std::vector<uint32_t> want(bytes.size() / 4);
         memcpy(want.data(), bytes.data(), want.size() * 4);
-        const std::vector<uint32_t> got = bfp16_insts(M, K, N, mode);
+        const std::vector<uint32_t> got = q4k     ? bfpq_insts(M, K, N, mode, BFPQ_Q4K)
+                                         : qcopy ? bfpq_insts(M, K, N, mode, BFPQ_BFP16)
+                                                 : bfp16_insts(M, K, N, mode);
         size_t first = 0;
         while (first < got.size() && first < want.size() && got[first] == want[first]) first++;
         const bool ok = got.size() == want.size() && first == got.size();
@@ -45,8 +51,16 @@ int main(int argc, char ** argv) {
         printf("%s %lldx%lldx%lld refused\n", ok ? "PASS" : "FAIL", M, K, N);
         failures += !ok;
     }
-    const bool wide = bfp16_insts_fits(512, 128, 34816) && !bfp16_insts(512, 128, 34816, 2).empty();
-    printf("%s 512x128x34816 fused shape accepted\n", wide ? "PASS" : "FAIL");
+    for (auto [M, K, N] : { std::array<long long, 3>{ 512, 2048, 1024 }, { 384, 2112, 1024 }, { 384, 2048, 960 },
+                            { 384, 2048, 35328 } }) {
+        const bool ok = !bfpq_insts_fits(M, K, N) && bfpq_insts(M, K, N, 0).empty() &&
+                        (K % 128 == 0 || bfpq_insts(M, K, N, 0, BFPQ_BFP16).empty());
+        printf("%s %lldx%lldx%lld refused (q4k)\n", ok ? "PASS" : "FAIL", M, K, N);
+        failures += !ok;
+    }
+    const bool wide = bfp16_insts_fits(512, 128, 34816) && !bfp16_insts(512, 128, 34816, 2).empty() &&
+                      bfpq_insts_fits(384, 256, 34816) && !bfpq_insts(384, 256, 34816, 2).empty();
+    printf("%s fused 34,816-wide shape accepted\n", wide ? "PASS" : "FAIL");
     failures += !wide;
     if (n == 0) {
         printf("no reference streams in %s\n", dir.string().c_str());

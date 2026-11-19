@@ -26,7 +26,7 @@ for f in libggml-zest.so libggml-zest-xrt.so zest npu; do
     [[ -f "$build/$f" ]] || { echo "no $f in $build; build first" >&2; exit 1; }
     cp "$build/$f" "$stage/"
 done
-cp "$root/kernels/bfp16_gemm/prebuilt/bfp16_gemm.xclbin" "$stage/"
+cp "$root/kernels/bfp16_gemm/prebuilt/bfp16_gemm.xclbin" "$root/kernels/bfp16_gemm/prebuilt/bfpq_gemm.xclbin" "$stage/"
 cp "$root/tools/bench.ps1" "$stage/"
 mkdir -p "$stage/tools" "$stage/docs" "$stage/tests/prompts"
 cp "$root/tools/bench-lemonade.ps1" "$stage/tools/"

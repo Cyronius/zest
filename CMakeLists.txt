@@ -70,10 +70,13 @@ endif()
 # one-liner and ggml-base resolves from the same directory. The NPU
 # kernel goes next to the library in both places: the backend looks for it there.
 set(XDNA_XCLBIN "${CMAKE_SOURCE_DIR}/kernels/bfp16_gemm/prebuilt/bfp16_gemm.xclbin")
+set(XDNA_QXCLBIN "${CMAKE_SOURCE_DIR}/kernels/bfp16_gemm/prebuilt/bfpq_gemm.xclbin")
 add_custom_command(TARGET ggml-zest POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:ggml-zest> "${GGML_DIST}"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${XDNA_XCLBIN}" "${GGML_DIST}"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${XDNA_XCLBIN}" $<TARGET_FILE_DIR:ggml-zest>
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${XDNA_QXCLBIN}" "${GGML_DIST}"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${XDNA_QXCLBIN}" $<TARGET_FILE_DIR:ggml-zest>
 )
 
 # The NPU path. XRT is vendored: headers under vendor/xrt (Apache-2.0, see
@@ -87,6 +90,8 @@ if(GGML_XDNA_NPU)
         src/npu/npu_bfp16.cpp
         src/npu/bfp16_pack.cpp
         src/npu/bfp16_insts.cpp
+        src/npu/bfpq_insts.cpp
+        src/npu/qtile_pack.cpp
     )
     target_include_directories(ggml-zest PRIVATE src/npu vendor/xrt-shim)
     target_compile_definitions(ggml-zest PRIVATE XDNA_HAVE_NPU)
@@ -225,7 +230,7 @@ endforeach()
 
 # The NPU instruction streams made on the host, against the toolchain's (no
 # NPU or XRT needed).
-add_executable(test-insts-gen tests/test-insts-gen.cpp src/npu/bfp16_insts.cpp)
+add_executable(test-insts-gen tests/test-insts-gen.cpp src/npu/bfp16_insts.cpp src/npu/bfpq_insts.cpp)
 target_include_directories(test-insts-gen PRIVATE src/npu)
 target_compile_definitions(test-insts-gen PRIVATE XDNA_INSTS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/insts")
 
@@ -269,6 +274,10 @@ endforeach()
 # give the right answer
 add_test(NAME mul-mat-npu-nan COMMAND "${GGML_DIST}/test-mul-mat${EXE}")
 set_tests_properties(mul-mat-npu-nan PROPERTIES LABELS npu ENVIRONMENT "${XDNA_ENV};GGML_XDNA_HOST_ONLY=;GGML_XDNA_NAN_AFTER=0")
+# every weight under the quantized-weight kernel (Q4_K unpacked on the NPU,
+# the rest copied through): the same answers as the BFP16 kernel's
+add_test(NAME mul-mat-npu-quant COMMAND "${GGML_DIST}/test-mul-mat${EXE}")
+set_tests_properties(mul-mat-npu-quant PROPERTIES LABELS npu ENVIRONMENT "${XDNA_ENV};GGML_XDNA_HOST_ONLY=;GGML_XDNA_WEIGHTS=quant")
 # every NPU submission fails: the same, through the other way the NPU fails
 add_test(NAME mul-mat-npu-fail COMMAND "${GGML_DIST}/test-mul-mat${EXE}")
 set_tests_properties(mul-mat-npu-fail PROPERTIES LABELS npu ENVIRONMENT "${XDNA_ENV};GGML_XDNA_HOST_ONLY=;GGML_XDNA_FAIL_AFTER=0")
@@ -277,6 +286,9 @@ add_test(NAME memory-budget-npu COMMAND "${GGML_DIST}/test-memory-budget${EXE}")
 set(XDNA_BUDGET_ENV "${XDNA_ENV};GGML_XDNA_MAX_COPY_GB=0.05")
 set_tests_properties(memory-budget-host PROPERTIES LABELS host ENVIRONMENT "${XDNA_BUDGET_ENV};GGML_XDNA_HOST_ONLY=1")
 set_tests_properties(memory-budget-npu PROPERTIES LABELS npu ENVIRONMENT "${XDNA_BUDGET_ENV};GGML_XDNA_HOST_ONLY=")
+# the same limit with every copy for the quantized-weight kernel
+add_test(NAME memory-budget-npu-quant COMMAND "${GGML_DIST}/test-memory-budget${EXE}")
+set_tests_properties(memory-budget-npu-quant PROPERTIES LABELS npu ENVIRONMENT "${XDNA_BUDGET_ENV};GGML_XDNA_HOST_ONLY=;GGML_XDNA_WEIGHTS=quant")
 # the host's small steps between NPU matmuls, against ggml's CPU backend
 add_test(NAME host-ops-host COMMAND "${GGML_DIST}/test-host-ops${EXE}")
 set_tests_properties(host-ops-host PROPERTIES LABELS host ENVIRONMENT "${XDNA_ENV};GGML_XDNA_HOST_ONLY=1")

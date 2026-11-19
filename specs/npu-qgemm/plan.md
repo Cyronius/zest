@@ -367,6 +367,80 @@ interleaved):
   today is memory: the weight copy at 9,728 bytes per 64 x 256 instead of
   18,432.
 
+**Phase 2 completed (2026-11-17).**
+
+- Host streams: `src/npu/bfpq_insts.{h,cpp}` (the stream pieces shared with
+  `bfp16_insts.cpp` moved to `src/npu/insts_stream.h`). Word for word the
+  toolchain's on 10 shapes and both formats (`tests/insts/q4k_*`,
+  `qcopy_*`; `test-insts-gen`).
+- A runtime weight format on the unpacking core (`dq_weights`): 0 is Q4_K;
+  1 copies B tiles packed on the host straight through (two to a 9,728-byte
+  object, `qtile_spread_bfp16`; 5.6% more bytes than BFP16), so weights of
+  any type run under this xclbin. One xclbin
+  (`kernels/bfp16_gemm/prebuilt/bfpq_gemm.xclbin`, `build-linux.sh` with
+  `DESIGN=q4k`) with host streams equals the BFP16 kernel bit for bit in both
+  formats, modes 0-2, at the gate, down and 6,144-wide shapes.
+- Times on a quiet machine (min of 15): gate 1536 x 5120 x 17408: BFP16
+  12.1 ms, Q4_K 15.7, copy-through 15.7; down 1536 x 17408 x 5120: 11.8,
+  15.5, 15.5. All three are compute-bound now (the earlier gate figures were
+  under load); 24 multiplying cores against 32 is the whole difference.
+- Switching hardware contexts measured here too: 0.16 ms a call on one
+  context, 2.55 ms a call alternating between the two xclbins. So the
+  backend must not interleave them per matmul.
+
+**Backend plan from this.** `GGML_XDNA_WEIGHTS=auto|bfp16|quant`:
+- `bfp16`: today's path only.
+- `quant`: every NPU weight under the quantized xclbin, Q4_K unpacked and
+  the rest copied through. One context, the smallest copies, ~30% slower
+  GEMMs.
+- `auto` (default): BFP16 copies while they fit the memory budget; from the
+  layer where they stop fitting, every weight of that layer and the later
+  ones goes under the quantized xclbin. (Removed 2026-11-18: see the Phase 3
+  result below. `bfp16` is the default.)
+
+**Phase 3 status (2026-11-17): in the backend.**
+`npu_bfp16` holds a second kernel (its own hardware context; a batch runs
+each kernel's calls as their own runlist). `xdna_npu` builds quantized-kernel
+copies (`add_weight` / `add_fused` with `quant`: Q4_K re-laid straight from
+the GGUF rows, fused gate/up interleaved the same way; other types packed and
+spread), runs them at 384 / 768 / 1,152 rows a call, and reads their C with
+the 3-row tiling. `ggml-zest.cpp`'s budget picks the kernel per weight
+(`GGML_XDNA_WEIGHTS`). Tests: `mul-mat-npu-quant` (every weight-buffer case
+under the quantized kernel: same errors as BFP16's to the printed digit),
+`memory-budget-npu-quant`.
+
+**Phase 3 result (2026-11-18, quiet machine,
+`docs/results/halo-npu-qgemm-2026-11-18.json`).** Qwen3.8-27B Q4_K_M, prefill
+tokens/s at 1,024 / 2,048 / 2,769 tokens, micro-batch 2,048:
+
+| | 1,024 | 2,048 | 2,769 |
+|---|---|---|---|
+| GPU alone | 367 | 349 | 347 |
+| `bfp16` (49 layers on the NPU) | 301 | 298 | 310 |
+| `quant` (64 layers) | 169 | 217 | 239 |
+| artlite upstream, NPU only | 440 | 443 | 432 |
+
+- `quant` is correct on the whole model: mean KL divergence against the GPU
+  0.0042 (BFP16 on 52 layers 0.0034), identical to BFP16 on all 64 layers to
+  the last printed digit, and the first 24 greedy tokens match the GPU's.
+- It is slower than `bfp16`, so `bfp16` is the default. More layers on the
+  NPU do not help while the two devices take turns: BFP16 on all 64 layers
+  (28 GB limit) gave 294 at 2,048 tokens against 298 on 49.
+- `auto` (BFP16 until the copies stop fitting, then quantized) never used
+  the quantized kernel: when a BFP16 copy stops fitting, a quantized copy of
+  the same layer doesn't fit either. Removed.
+- `quant` pads rows: each call rounds up to a multiple of 384, so a
+  1,024-token chunk runs as 1,536 rows.
+- `mul-mat-npu-quant` passed when the quantized kernel could not run (the
+  NPU failed and the GPU finished the work). The test now fails on an NPU
+  failure the backend reports, unless one was injected.
+- The quantized kernel's limit is the unpacking core, 12.8 ms per 1,536-row
+  feed-forward multiply (repeating the unpack 2 and 3 times a tile: 26.4 and
+  39.2 ms). The multiply loop needs 11.9 ms, or about 8 with bf16 sums.
+- The NPU and the GPU tie on the multiplies (BFP16 kernel 20.3-21.0 TFLOPS,
+  the GPU about 21); the host's work between the NPU's multiplies is the
+  loss. Next: the feed-forward block as one NPU submission.
+
 ### Phase 3: backend
 
 - `src/xdna-npu.{h,cpp}`:

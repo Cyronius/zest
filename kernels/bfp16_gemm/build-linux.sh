@@ -10,7 +10,11 @@
 # TILE_N build another, for measurements. BF16_SUMS=1 keeps bf16 running sums
 # in output modes 1 and 2 (designs/whole_array_bfp_rtp.py --bf16-sums); C16=1
 # also keeps the tile itself bf16 and sends half the C bytes (--c16; the host
-# side does not read that layout yet).
+# side does not read that layout yet). DESIGN=q4k builds the GEMM on Q4_K
+# weights unpacked on the array instead (designs/whole_array_bfpq.py: M a
+# multiple of 384, K of 256; src/npu/bfpq_insts.cpp makes its streams), into
+# build/q4k_<shape>; FMT=1 gives its streams for B tiles copied through
+# (the xclbin is the same).
 # Usage: build-linux.sh M K N [out-mode]
 set -euo pipefail
 
@@ -41,6 +45,13 @@ if [[ $tm/$tk/$tn != 128/64/64 ]]; then shape="${shape}_t${tm}x${tk}x${tn}"; fi
 sums=()
 if [[ ${BF16_SUMS:-0} == 1 ]]; then shape="${shape}_s16"; sums=(--bf16-sums); fi
 if [[ ${C16:-0} == 1 ]]; then shape="${shape}_c16"; sums=(--bf16-sums --c16); fi
+design=${DESIGN:-bfp16}
+if [[ $design == q4k ]]; then
+    if [[ ${FMT:-0} == 1 ]]; then shape="qcopy_$shape"; else shape="q4k_$shape"; fi
+elif [[ $design != bfp16 ]]; then
+    echo "DESIGN must be bfp16 or q4k" >&2
+    exit 2
+fi
 out="$here/build/$shape"
 mkdir -p -- "$out"
 rm -rf -- "$out/final.prj"
@@ -51,7 +62,17 @@ set +u
 source "$mlir_aie_root/utils/env_setup.sh"
 set -u
 export BFP_KFLAGS=''
-python "$here/designs/whole_array_bfp_rtp.py" -d npu2 --n-aie-cols 8 \
-    -M "$M" -K "$K" -N "$N" -m "$tm" -k "$tk" -n "$tn" --c-tiled --out-mode "$mode" "${sums[@]}" \
-    --xclbin-path "$out/final.xclbin" --insts-path "$out/insts.bin"
+if [[ $design == q4k ]]; then
+    if [[ $tm/$tk/$tn != 128/64/64 || ${C16:-0} == 1 ]]; then
+        echo "DESIGN=q4k has the 128 x 64 x 64 tile and fp32 C only" >&2
+        exit 2
+    fi
+    python "$here/designs/whole_array_bfpq.py" -d npu2 \
+        -M "$M" -K "$K" -N "$N" --out-mode "$mode" --fmt "${FMT:-0}" "${sums[@]}" \
+        --xclbin-path "$out/final.xclbin" --insts-path "$out/insts.bin"
+else
+    python "$here/designs/whole_array_bfp_rtp.py" -d npu2 --n-aie-cols 8 \
+        -M "$M" -K "$K" -N "$N" -m "$tm" -k "$tk" -n "$tn" --c-tiled --out-mode "$mode" "${sums[@]}" \
+        --xclbin-path "$out/final.xclbin" --insts-path "$out/insts.bin"
+fi
 echo "BUILD_OK $shape -> $out"

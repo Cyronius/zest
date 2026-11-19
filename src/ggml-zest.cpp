@@ -181,6 +181,9 @@ static bool xdna_pinned_mem() {
     return v;
 }
 
+// Whether a weight's NPU copy goes under the quantized-weight kernel (the budget's choice, below).
+static bool xdna_weight_quant(const ggml_tensor * w);
+
 struct xdna_context {
     ggml_backend_t vk = nullptr;  // our own Vulkan backend, for async reads, and pieces after an NPU failure
 
@@ -296,7 +299,7 @@ struct xdna_context {
             } else {
                 raw.resize(ggml_nbytes(j.w));
                 read(j.w, raw.data());
-                ok = npu->add_weight(key, raw.data(), err);
+                ok = npu->add_weight(key, raw.data(), err, xdna_weight_quant(j.w));
             }
             std::lock_guard<std::mutex> lk(build_mu);
             if (ok) built_at_load++;
@@ -315,7 +318,7 @@ struct xdna_context {
             read(uw, u.data());
             up = u.data();
         }
-        return npu->add_fused(xdna_npu::gate_key(gw, uw), g.data(), up, err);
+        return npu->add_fused(xdna_npu::gate_key(gw, uw), g.data(), up, err, xdna_weight_quant(gw));
     }
 
     // Waits for the copies queued so far. A copy that failed to build fails
@@ -434,6 +437,37 @@ static double xdna_copy_bytes(int64_t K, int64_t N) {
     return (double) ((N + 511) / 512 * 512) * (double) K / 8 * 9;
 }
 
+// Which kernel a weight's copy is for (GGML_XDNA_WEIGHTS):
+//   bfp16  (default) the BFP16 kernel, every copy 9 bits a weight
+//   quant  the kernel on quantized weights (xdna-npu.h): Q4_K at 4.75 bits a
+//          weight, unpacked on the NPU, other types copied through as
+//          BFP16; ~30% slower a GEMM (24 of the 32 cores multiply), but
+//          about half the memory for a Q4_K model
+// One kernel for the whole model: switching the NPU between the two costs
+// ~2.4 ms, and a mix chosen as the copies fill the limit gains nothing (by
+// the time BFP16 copies stop fitting, a quantized one doesn't fit either;
+// Qwen3.8-27B, 2026-11-18).
+enum class xdna_wmode { bfp16, quant };
+static xdna_wmode xdna_weights_mode() {
+    static const xdna_wmode m = [] {
+        const char * s = xdna_env("GGML_XDNA_WEIGHTS");
+        if (!s || !*s || !strcmp(s, "bfp16")) return xdna_wmode::bfp16;
+        if (!strcmp(s, "quant")) return xdna_wmode::quant;
+        GGML_LOG_WARN("xdna: GGML_XDNA_WEIGHTS=%s is not bfp16 or quant; using bfp16\n", s);
+        return xdna_wmode::bfp16;
+    }();
+    return m;
+}
+
+// A quantized-kernel copy's bytes, or negative when the weight can't have one.
+static double xdna_qcopy_bytes(const ggml_tensor * w) {
+#ifdef XDNA_HAVE_NPU
+    if (xdna_npu_has_qshape((int) w->type, w->ne[0], w->ne[1])) return xdna_npu_qcopy_bytes((int) w->type, w->ne[0], w->ne[1]);
+#endif
+    (void) w;
+    return -1;
+}
+
 // The layer a weight belongs to, from llama.cpp's names ("blk.12.attn_q.weight");
 // -1 for the others (the output matrix).
 static int xdna_layer_of(const ggml_tensor * w) {
@@ -469,7 +503,11 @@ struct xdna_budget {
     static constexpr double DEFAULT_MAX = 20 * GB;
     bool started = false, cut = false, running = false, overridden = false, capped = false, locked = false;
     double limit = 0, free = 0, kept_back = 0, taken = 0;
-    struct entry { int layer; double bytes; };
+    struct entry {
+        int layer;
+        double bytes;  // of the copy it gets
+        bool quant;    // under the quantized kernel
+    };
     std::unordered_map<xdna_context::wkey, entry, xdna_context::wkey_hash> in, out;  // taken; left to the GPU
 
     // where the limit came from, for the log
@@ -521,7 +559,8 @@ static bool xdna_budget_takes(const ggml_tensor * w) {
         }
 #endif
     }
-    const xdna_budget::entry e = { xdna_layer_of(w), xdna_copy_bytes(w->ne[0], w->ne[1]) };
+    const double qbytes = xdna_weights_mode() == xdna_wmode::quant ? xdna_qcopy_bytes(w) : -1;
+    const xdna_budget::entry e = { xdna_layer_of(w), qbytes >= 0 ? qbytes : xdna_copy_bytes(w->ne[0], w->ne[1]), qbytes >= 0 };
     if (!b.cut && b.taken + e.bytes <= b.limit) {
         b.in[key] = e;
         b.taken += e.bytes;
@@ -559,8 +598,24 @@ static void xdna_budget_report() {
     if (b.running) return;
     b.running = true;
     if (!b.started || b.cut) return;
-    GGML_LOG_INFO("xdna: NPU weight copies: %.1f GB for %zu weights (limit %.1f GB: %s)\n", b.taken / GB, b.in.size(),
-                  std::max(0.0, b.limit) / GB, b.source().c_str());
+    size_t quant = 0;
+    for (const auto & kv : b.in) quant += kv.second.quant;
+    GGML_LOG_INFO("xdna: NPU weight copies: %.1f GB for %zu weights, %zu under the quantized kernel (limit %.1f GB: %s)\n",
+                  b.taken / GB, b.in.size(), quant, std::max(0.0, b.limit) / GB, b.source().c_str());
+}
+
+// Whether a weight's copy goes under the quantized kernel: as the budget
+// decided, or, for a weight it never counted, as GGML_XDNA_WEIGHTS says
+// without a budget (quant: when it can).
+static bool xdna_weight_quant(const ggml_tensor * w) {
+    xdna_budget & b = g_budget;
+    {
+        std::lock_guard<std::mutex> lk(b.mu);
+        const xdna_context::wkey key = { w->buffer, w->data, (int) w->type, w->ne[0], w->ne[1] };
+        const auto it = b.in.find(key);
+        if (it != b.in.end()) return it->second.quant;
+    }
+    return xdna_weights_mode() == xdna_wmode::quant && xdna_qcopy_bytes(w) >= 0;
 }
 
 //
@@ -680,7 +735,7 @@ static bool xdna_mul_mat(xdna_context & ctx, ggml_tensor * node) {
             ctx.late_copies++;
             ctx.scratch_weight.resize(ggml_nbytes(src0));
             ctx.read(src0, ctx.scratch_weight.data());
-            ok = npu->add_weight(key, ctx.scratch_weight.data(), err);
+            ok = npu->add_weight(key, ctx.scratch_weight.data(), err, xdna_weight_quant(src0));
         }
         if (ok) ok = npu->mul_mat(key, (const float *) x, src1->ne[1], (float *) ctx.out.data(), err);
         if (ok) {
@@ -881,7 +936,7 @@ static ggml_status ggml_backend_xdna_graph_compute(ggml_backend_t backend, ggml_
             ctx.late_copies++;
             ctx.scratch_weight.resize(ggml_nbytes(w));
             ctx.read(w, ctx.scratch_weight.data());
-            return npu->add_weight(key, ctx.scratch_weight.data(), err);
+            return npu->add_weight(key, ctx.scratch_weight.data(), err, xdna_weight_quant(w));
         };
         io.ensure_fused = [&](const ggml_tensor * gw, const ggml_tensor * uw, std::string & err) {
             for (const ggml_tensor * w : { gw, uw })

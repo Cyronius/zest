@@ -27,19 +27,22 @@ bool read_file(const std::string & path, std::vector<uint8_t> & out, std::string
 npu_bfp16::~npu_bfp16() { close(); }
 
 void npu_bfp16::close() {
-    if (run_) xrtsh_run_free(run_);
+    for (kernel & k : kernels_) if (k.run) xrtsh_run_free(k.run);
     for (shape & s : shapes_) if (s.ibo) xrtsh_bo_free(s.ibo);
     for (wbuf & w : weights_) if (w.bo) xrtsh_bo_free(w.bo);
     for (void * bo : abos_) if (bo) xrtsh_bo_free(bo);
     if (cbo_)  xrtsh_bo_free(cbo_);
-    if (kern_) xrtsh_kernel_free(kern_);
-    if (ctx_)  xrtsh_hwctx_free(ctx_);
+    for (kernel & k : kernels_) {
+        if (k.kern) xrtsh_kernel_free(k.kern);
+        if (k.ctx) xrtsh_hwctx_free(k.ctx);
+    }
     if (dev_)  xrtsh_device_free(dev_);
     shapes_.clear();
     weights_.clear();
     abos_.clear();
     a_caps_.clear();
-    run_ = cbo_ = kern_ = ctx_ = dev_ = nullptr;
+    kernels_.clear();
+    cbo_ = dev_ = nullptr;
     c_bytes_ = 0;
 }
 
@@ -48,14 +51,25 @@ bool npu_bfp16::open(const std::string & xclbin_path, std::string & err) {
     if (!dev_) { err = shim_error("cannot open the NPU"); return false; }
     char name[256];
     if (xrtsh_device_name(dev_, name, sizeof(name)) > 0) device_name_ = name;
-
-    ctx_ = xrtsh_hwctx_create(dev_, xclbin_path.c_str());
-    if (!ctx_) { err = shim_error("cannot load " + xclbin_path); close(); return false; }
-    kern_ = xrtsh_kernel_create_xclbin(ctx_, "MLIR_AIE");
-    if (!kern_) { err = shim_error("cannot create the kernel"); close(); return false; }
-    run_ = xrtsh_run_create(kern_);
-    if (!run_) { err = shim_error("cannot create the run"); close(); return false; }
+    if (open_kernel(xclbin_path, err) < 0) { close(); return false; }
     return true;
+}
+
+int npu_bfp16::open_kernel(const std::string & xclbin_path, std::string & err) {
+    if (!dev_) { err = "the NPU is not open"; return -1; }
+    kernel k;
+    k.ctx = xrtsh_hwctx_create(dev_, xclbin_path.c_str());
+    if (!k.ctx) { err = shim_error("cannot load " + xclbin_path); return -1; }
+    k.kern = xrtsh_kernel_create_xclbin(k.ctx, "MLIR_AIE");
+    if (k.kern) k.run = xrtsh_run_create(k.kern);
+    if (!k.kern || !k.run) {
+        err = shim_error(k.kern ? "cannot create the run" : "cannot create the kernel");
+        if (k.kern) xrtsh_kernel_free(k.kern);
+        xrtsh_hwctx_free(k.ctx);
+        return -1;
+    }
+    kernels_.push_back(k);
+    return (int) kernels_.size() - 1;
 }
 
 int npu_bfp16::add_shape(const std::string & insts_path, int64_t M, int64_t K, int64_t N, std::string & err) {
@@ -66,12 +80,16 @@ int npu_bfp16::add_shape(const std::string & insts_path, int64_t M, int64_t K, i
     return add_shape(words, M, K, N, err);
 }
 
-int npu_bfp16::add_shape(const std::vector<uint32_t> & instr, int64_t M, int64_t K, int64_t N, std::string & err) {
+int npu_bfp16::add_shape(const std::vector<uint32_t> & instr, int64_t M, int64_t K, int64_t N, std::string & err,
+                         int kernel, size_t b_bytes) {
+    if (kernel < 0 || kernel >= (int) kernels_.size()) { err = "no such kernel"; return -1; }
     shape s;
     s.M = M; s.K = K; s.N = N;
+    s.kernel = kernel;
+    s.b_bytes = b_bytes ? b_bytes : (size_t) (N * K / 8 * BFP16_BLOCK_BYTES);
     const size_t bytes = instr.size() * sizeof(uint32_t);
     s.n_words = (int) instr.size();
-    s.ibo = xrtsh_bo_create_instr(dev_, kern_, bytes);
+    s.ibo = xrtsh_bo_create_instr(dev_, kernels_[kernel].kern, bytes);
     if (!s.ibo) { err = shim_error("cannot allocate an instruction buffer"); return -1; }
     if (xrtsh_bo_write(s.ibo, instr.data(), bytes, 0) < 0 || xrtsh_bo_sync(s.ibo, 1) < 0) {
         err = shim_error("instruction upload");
@@ -251,14 +269,22 @@ bool npu_bfp16::batch::prepare(const std::vector<int> & shapes, std::string & er
     for (size_t i = 0; i < n_; i++) {
         call & c = calls_[i];
         const shape & s = npu_.shapes_.at(shapes[i]);
-        const size_t a_need = (size_t) (s.M * s.K / 8 * BFP16_BLOCK_BYTES), b_need = (size_t) (s.N * s.K / 8 * BFP16_BLOCK_BYTES);
+        const size_t a_need = (size_t) (s.M * s.K / 8 * BFP16_BLOCK_BYTES), b_need = s.b_bytes;
         const size_t c_need = (size_t) (s.M * s.N) * sizeof(float);
         const int bi = b_[i];
         if (!npu_.ensure(c.a, c.a_cap, a_need, err) || !npu_.ensure(c.c, c.c_cap, c_need, err)) return false;
         if (bi < 0 && !npu_.ensure(c.b, c.b_cap, b_need, err)) return false;
         if (bi >= 0 && npu_.weights_.at(bi).bytes < b_need) { err = "a B buffer too small for this shape"; return false; }
         if (!map(c, err)) return false;
-        if (!c.run && !(c.run = xrtsh_run_create(npu_.kern_))) { err = shim_error("cannot create a batch run"); return false; }
+        if (c.run && c.kernel != s.kernel) {
+            xrtsh_run_free(c.run);
+            c.run = nullptr;
+        }
+        if (!c.run && !(c.run = xrtsh_run_create(npu_.kernels_[s.kernel].kern))) {
+            err = shim_error("cannot create a batch run");
+            return false;
+        }
+        c.kernel = s.kernel;
         c.shape = shapes[i];
         xrtsh_run_set_arg_int(c.run, 0, 3);
         xrtsh_run_set_arg_bo (c.run, 1, s.ibo);
@@ -277,7 +303,7 @@ bool npu_bfp16::batch::start(std::string & err) {
         const call & c = calls_[i];
         const shape & s = npu_.shapes_[c.shape];
         if (xrtsh_bo_sync_range(c.a, 1, (size_t) (s.M * s.K / 8 * BFP16_BLOCK_BYTES), 0) < 0 ||
-            (b_[i] < 0 && xrtsh_bo_sync_range(c.b, 1, (size_t) (s.N * s.K / 8 * BFP16_BLOCK_BYTES), 0) < 0)) {
+            (b_[i] < 0 && xrtsh_bo_sync_range(c.b, 1, s.b_bytes, 0) < 0)) {
             err = shim_error("batch operand sync");
             return false;
         }
@@ -286,17 +312,32 @@ bool npu_bfp16::batch::start(std::string & err) {
     const double ms = std::chrono::duration<double, std::milli>(t_start_ - ts).count();
     npu_.sync_in_ms += ms;
     npu_.sync_ms += ms;
-    if (n_ == 1) {
-        if (xrtsh_run_start(calls_[0].run) < 0) { err = shim_error("submit"); return false; }
-    } else {
-        rl_ = xrtsh_runlist_create(npu_.ctx_);
-        if (!rl_) { err = shim_error("cannot create a runlist"); return false; }
-        bool ok = true;
-        for (size_t i = 0; i < n_ && ok; i++) ok = xrtsh_runlist_add(rl_, calls_[i].run) >= 0;
-        if (!ok || xrtsh_runlist_execute(rl_) < 0) {
-            err = shim_error("runlist");
-            xrtsh_runlist_free(rl_);
-            rl_ = nullptr;
+    // a runlist holds one context's runs: a part per run of calls on one kernel
+    parts_.clear();
+    for (size_t i = 0; i < n_; i++) {
+        if (parts_.empty() || calls_[i].kernel != calls_[parts_.back().first].kernel) parts_.push_back({ i, 0, nullptr });
+        parts_.back().n++;
+    }
+    for (size_t p = 0; p < parts_.size(); p++) {
+        part & pt = parts_[p];
+        bool ok;
+        if (pt.n == 1) {
+            ok = xrtsh_run_start(calls_[pt.first].run) >= 0;
+            if (!ok) err = shim_error("submit");
+        } else {
+            pt.rl = xrtsh_runlist_create(npu_.kernels_[calls_[pt.first].kernel].ctx);
+            ok = pt.rl != nullptr;
+            for (size_t i = pt.first; i < pt.first + pt.n && ok; i++) ok = xrtsh_runlist_add(pt.rl, calls_[i].run) >= 0;
+            ok = ok && xrtsh_runlist_execute(pt.rl) >= 0;
+            if (!ok) err = shim_error("runlist");
+        }
+        if (!ok) {
+            // what started finishes before its buffers can be touched
+            if (pt.rl) xrtsh_runlist_free(pt.rl);
+            parts_.resize(p);
+            std::string ignore;
+            in_flight_ = true;
+            wait(ignore);
             return false;
         }
     }
@@ -307,17 +348,24 @@ bool npu_bfp16::batch::start(std::string & err) {
 bool npu_bfp16::batch::wait(std::string & err, double * ms) {
     if (!in_flight_) { err = "batch waited without a start"; return false; }
     in_flight_ = false;
-    bool ok;
-    if (rl_) {
-        ok = xrtsh_runlist_wait(rl_) >= 0;
-        if (!ok) err = shim_error("runlist");
-        xrtsh_runlist_free(rl_);
-        rl_ = nullptr;
-    } else {
-        const int state = xrtsh_run_wait(calls_[0].run);
-        ok = state == 4;
-        if (!ok) err = "the kernel did not complete (state " + std::to_string(state) + "): " + xrtsh_last_error();
+    bool ok = true;
+    for (part & pt : parts_) {
+        if (pt.rl) {
+            if (xrtsh_runlist_wait(pt.rl) < 0 && ok) {
+                err = shim_error("runlist");
+                ok = false;
+            }
+            xrtsh_runlist_free(pt.rl);
+            pt.rl = nullptr;
+        } else if (pt.n == 1) {
+            const int state = xrtsh_run_wait(calls_[pt.first].run);
+            if (state != 4 && ok) {
+                err = "the kernel did not complete (state " + std::to_string(state) + "): " + xrtsh_last_error();
+                ok = false;
+            }
+        }
     }
+    parts_.clear();
     if (!ok) return false;
     const auto ts = std::chrono::steady_clock::now();
     if (ms) *ms = std::chrono::duration<double, std::milli>(ts - t_start_).count();
@@ -337,8 +385,8 @@ bool npu_bfp16::batch::wait(std::string & err, double * ms) {
 }
 
 bool npu_bfp16::submit(const shape & s, int slot, const wbuf & w, std::string & err, double * ms) {
-    const size_t w_need = (size_t) (s.N * s.K / 8 * BFP16_BLOCK_BYTES);
-    if (w.bytes != w_need) { err = "weights are the wrong size for this shape"; return false; }
+    if (w.bytes != s.b_bytes) { err = "weights are the wrong size for this shape"; return false; }
+    void * run_ = kernels_[s.kernel].run;
     if ((int) abos_.size() <= slot || a_caps_[slot] < (size_t) (s.M * s.K / 8 * BFP16_BLOCK_BYTES)) {
         err = "no activations set for this shape";
         return false;

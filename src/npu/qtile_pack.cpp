@@ -85,17 +85,39 @@ void qtile_pack_q4k_tile(const uint8_t * const * blocks, uint8_t * tile) {
                     }
 }
 
-void qtile_pack_q4k(const uint8_t * raw, size_t row_stride, int64_t N, int64_t K, uint8_t * out,
-                    const bfp16_runner & run) {
+void qtile_pack_q4k_rows(int64_t N, int64_t K, uint8_t * out, const bfp16_runner & run, const qtile_row_src & row) {
+    static const uint8_t zero_block[Q4K_BLOCK_BYTES] = {};  // d = dmin = 0: every value 0
     const int64_t nsb = K / QTILE_K, ntiles = N / QTILE_ROWS * nsb;
     run(ntiles, [&](int64_t t0, int64_t t1) {
+        const uint8_t * rows[64];
         const uint8_t * blocks[64];
+        int64_t rg_have = -1;
         for (int64_t t = t0; t < t1; t++) {
             const int64_t rg = t / nsb, sb = t % nsb;
-            for (int r = 0; r < 64; r++) blocks[r] = raw + (rg * 64 + r) * row_stride + sb * Q4K_BLOCK_BYTES;
+            if (rg != rg_have) {
+                for (int r = 0; r < 64; r++) rows[r] = row(rg * 64 + r);
+                rg_have = rg;
+            }
+            for (int r = 0; r < 64; r++) blocks[r] = rows[r] ? rows[r] + sb * Q4K_BLOCK_BYTES : zero_block;
             qtile_pack_q4k_tile(blocks, out + qtile_index(rg, sb, N, K) * QTILE_Q4K_BYTES);
         }
     });
+}
+
+void qtile_pack_q4k(const uint8_t * raw, size_t row_stride, int64_t N, int64_t K, uint8_t * out,
+                    const bfp16_runner & run) {
+    qtile_pack_q4k_rows(N, K, out, run, [&](int64_t r) { return raw + r * row_stride; });
+}
+
+size_t qtile_bfp16_bytes(int64_t N, int64_t K) { return (size_t) (N / 64) * (size_t) (K / 128) * QTILE_Q4K_BYTES; }
+
+void qtile_spread_bfp16(uint8_t * buf, int64_t N, int64_t K) {
+    constexpr size_t PAIR = 2 * 64 * 64 / 8 * 9;
+    const int64_t n = (N / 64) * (K / 128);
+    for (int64_t i = n - 1; i >= 0; i--) {  // from the back, so nothing is overwritten before it moves
+        memmove(buf + i * QTILE_Q4K_BYTES, buf + i * PAIR, PAIR);
+        memset(buf + i * QTILE_Q4K_BYTES + PAIR, 0, QTILE_Q4K_BYTES - PAIR);
+    }
 }
 
 void qtile_unpack_q4k(const uint8_t * tile, uint8_t * out) {

@@ -334,6 +334,25 @@ in host-only mode and on the NPU):
 - layer 0's and layer 1's weights are still claimed
 - after the context is freed, a new context claims the layer 3 weight and
   layer 2's fourth
+- with `GGML_XDNA_WEIGHTS=quant` (ctest's `memory-budget-npu-quant`), Q4_K
+  weights count at the quantized-weight kernel's 2.375 MiB each: layers 0-4
+  are claimed (47.5 MiB), and layer 5's first weight; its second passes the
+  limit and layer 5 then is not claimed
+
+**Which kernel a copy is for (added 2026-11-17, `GGML_XDNA_WEIGHTS`).** A
+second kernel takes weights at their quantized size
+(`kernels/bfp16_gemm/designs/whole_array_bfpq.py`, `bfpq_gemm.xclbin`,
+`GGML_XDNA_QKERNELS` for another): Q4_K re-laid by the host and unpacked on
+the NPU (9,728 bytes per 64 x 256 against BFP16's 18,432), other types
+packed as BFP16 and copied through (5.6% more bytes). Its results equal the
+BFP16 kernel's bit for bit; its GEMMs take ~30% longer (24 of 32 cores
+multiply); switching between the two kernels' hardware contexts costs
+~2.4 ms. `bfp16` (the default) gives every copy to the BFP16 kernel;
+`quant` gives every copy that can go there (N padded to 512, K a multiple
+of 128, Q4_K's of 256) to the quantized one, counted at that size. There is
+no mixed mode: one that moved to quantized copies when BFP16 ones stopped
+fitting was tried and removed, because by then a quantized copy doesn't fit
+either (Qwen3.8-27B, 2026-11-18: it ran exactly what `bfp16` runs).
 
 **Verification (manual, the log line):** when the limit is reached, the
 add-on shall log one warning saying the limit, where it came from, and how
