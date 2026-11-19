@@ -624,6 +624,7 @@ An empty value counts as unset.
 | `GGML_XDNA_QKERNELS` | `bfpq_gemm.xclbin` next to the add-on | another xclbin for the quantized-weight kernel |
 | `GGML_XDNA_BLOCKS` | 1 | 0 takes only the multiplies, not the steps between them |
 | `GGML_XDNA_STREAMS` | 2 | how many parts a piece is split into, so the CPU and NPU overlap |
+| `GGML_XDNA_SPLIT` | 0 | experimental: the NPU's share, in percent, of each prompt piece's rows; the GPU runs the other rows at the same time instead of waiting its turn (0: the NPU takes whole pieces) |
 | `GGML_XDNA_CHAIN` | 1 | 0 brings a feed-forward block's middle result back to the CPU between its two multiplies instead of chaining them on the NPU (the answers are the same either way) |
 | `GGML_XDNA_N_THREADS` | all cores | CPU threads for the add-on's own work |
 | `GGML_XDNA_TRACE` | 0 | 1 prints where the time goes |

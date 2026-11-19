@@ -85,6 +85,16 @@ std::atomic<int64_t> xdna_decode_cpu_ns{0};
 std::atomic<int64_t> xdna_encode_cpu_ns{0};
 std::atomic<int64_t> xdna_op_cpu_ns[GGML_OP_COUNT]{};
 
+int xdna_exec_row_dim(const ggml_tensor * t) {
+    return t->ne[3] > 1 ? 3 : t->ne[2] > 1 ? 2 : t->ne[1] > 1 ? 1 : 0;
+}
+
+int xdna_exec_row_dim(const ggml_tensor * op, int j) {
+    const ggml_tensor * s = op->src[j];
+    if (!s || (op->op == GGML_OP_MUL_MAT && j == 0) || s == xdna_exec_param(op)) return -1;
+    return xdna_exec_row_dim(s);
+}
+
 const ggml_tensor * xdna_exec_param(const ggml_tensor * op) {
     switch (op->op) {
         case GGML_OP_MUL: return op->src[1];
@@ -225,7 +235,7 @@ struct piece {
         static const float * key_ff = nullptr;
         const ggml_tensor * b = n->src[1];
         const int32_t * pos = (const int32_t *) data(b);
-        const int64_t T_ = b->ne[0];
+        const int64_t T_ = std::min<int64_t>(b->ne[0], T);
         const int n_dims = param_i32(n, 1), n_ctx_orig = param_i32(n, 4);
         const float * ff = n->src[2] ? io.param(n->src[2]) : nullptr;
         // freq_base, freq_scale, ext_factor, attn_factor, beta_fast, beta_slow
@@ -489,7 +499,7 @@ void xdna_exec_weights(const ggml_cgraph * g, const xdna_io & io,
 }
 
 bool xdna_exec_piece(const ggml_cgraph * g, xdna_npu * npu, thread_pool & pool, const xdna_io & io, int n_streams,
-                     std::string & err) {
+                     std::string & err, int64_t rows) {
     piece P(g, npu, pool, io);
     P.nodes = piece_nodes(g);
     for (ggml_tensor * n : P.nodes)
@@ -506,6 +516,14 @@ bool xdna_exec_piece(const ggml_cgraph * g, xdna_npu * npu, thread_pool & pool, 
             return false;
         }
     }
+
+    // with a row limit, the first rows of every per-row tensor
+    const int64_t T_all = P.T;
+    if (rows > 0 && rows < P.T) P.T = rows;
+    const auto row_bytes = [&](const ggml_tensor * t) {
+        const int d = xdna_exec_row_dim(t);
+        return t->ne[d] == T_all ? (size_t) (P.T * t->nb[d]) : ggml_nbytes(t);
+    };
 
     fusions fused;
     if (npu) fused = find_fusions(P.nodes, g, io);
@@ -535,7 +553,7 @@ bool xdna_exec_piece(const ggml_cgraph * g, xdna_npu * npu, thread_pool & pool, 
             if (n->op == GGML_OP_RESHAPE) continue;
             void * p = io.alloc(ggml_nbytes(s));
             if (!p) { err = "out of host memory"; return false; }
-            io.read(s, p);
+            io.read(s, p, row_bytes(s));
             P.mem[s] = p;
         }
     }
@@ -684,6 +702,8 @@ bool xdna_exec_piece(const ggml_cgraph * g, xdna_npu * npu, thread_pool & pool, 
             if (!npu->reserve(si, all, err)) return false;
     }
 
+    if (io.inputs_read) io.inputs_read();
+
     size_t left = S.size();
     while (left) {
         for (int si = 0; si < (int) S.size(); si++) {
@@ -734,7 +754,8 @@ bool xdna_exec_piece(const ggml_cgraph * g, xdna_npu * npu, thread_pool & pool, 
     }
 
     // results that something outside the piece reads
+    if (io.before_write && !io.before_write(err)) return false;
     for (ggml_tensor * n : P.nodes)
-        if (!is_noop(n) && io.needed_outside(n, g)) io.write(n, P.mem.at(P.key(n)));
+        if (!is_noop(n) && io.needed_outside(n, g)) io.write(n, P.mem.at(P.key(n)), row_bytes(n));
     return true;
 }

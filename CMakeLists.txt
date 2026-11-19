@@ -298,6 +298,15 @@ add_test(NAME ffn-block-npu COMMAND "${GGML_DIST}/test-ffn-block${EXE}")
 set_tests_properties(ffn-block-npu PROPERTIES LABELS npu ENVIRONMENT "${XDNA_ENV};GGML_XDNA_HOST_ONLY=")
 add_test(NAME ffn-block-npu-quant COMMAND "${GGML_DIST}/test-ffn-block${EXE}")
 set_tests_properties(ffn-block-npu-quant PROPERTIES LABELS npu ENVIRONMENT "${XDNA_ENV};GGML_XDNA_HOST_ONLY=;GGML_XDNA_WEIGHTS=quant")
+# the experimental row split: the GPU runs half the block's rows at the same
+# time; and with every NPU submission failing, the GPU finishes the NPU's rows
+add_test(NAME ffn-block-npu-split COMMAND ${CMAKE_COMMAND} "-DEXE=${GGML_DIST}/test-ffn-block${EXE}"
+    "-DRUN_ENV=${XDNA_ENV};GGML_XDNA_HOST_ONLY=;GGML_XDNA_SPLIT=50;GGML_XDNA_TRACE=1;GGML_XDNA_TRACE_EVERY=1"
+    "-DEXPECT=1 pieces shared with the GPU" -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/expect-output.cmake")
+set_tests_properties(ffn-block-npu-split PROPERTIES LABELS npu)
+add_test(NAME ffn-block-npu-split-fail COMMAND "${GGML_DIST}/test-ffn-block${EXE}")
+set_tests_properties(ffn-block-npu-split-fail PROPERTIES LABELS npu
+    ENVIRONMENT "${XDNA_ENV};GGML_XDNA_HOST_ONLY=;GGML_XDNA_SPLIT=50;GGML_XDNA_FAIL_AFTER=0")
 add_test(NAME ffn-chain-same-bits COMMAND ${CMAKE_COMMAND} "-DEXE=${GGML_DIST}/test-ffn-block${EXE}"
     "-DENV_BOTH=${XDNA_ENV};GGML_XDNA_HOST_ONLY=" "-DENV_A=GGML_XDNA_CHAIN=1" "-DENV_B=GGML_XDNA_CHAIN=0"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/same-checksum.cmake")

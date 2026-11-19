@@ -521,7 +521,121 @@ decode and encode time by 30% and 24%, but inside the pieces the NPU's own
 time is now what the host waits on, so most of that saving shows as
 waiting. With the GPU to itself later that evening (controls matching the
 morning's quiet figures): 300.0 before, 305.6 with the new kernel and
-chains.
+chains (`docs/results/halo-npu-chain-2026-11-18.json` has both sittings).
+
+**The row split (experiment, `GGML_XDNA_SPLIT`, off by default).** Taking
+turns, the two devices cannot beat the faster of them by much: the NPU and
+the GPU tie on the multiplies, so the pieces the NPU takes cost what the GPU
+would have spent on them plus the host's work. The split gives the NPU a
+share of each claimed piece's rows and runs the piece's own graph over the
+other rows on the GPU at the same time, in place in the tensors' memory
+(XDNA-ROW-SPLIT). An earlier token-row split (2026-11-13) lost, when the
+NPU kernel ran at 12-13 TFLOPS and the host passes cost twice what they do
+now. On paper, at today's speeds, half the rows each takes the claimed
+pieces from about 4.6 s to about 2.4 s per 2,048 tokens (298 tokens/s to
+about 430), more with every layer on the NPU.
+
+It passes its tests (a block with half its rows on the GPU; the same with
+every NPU submission failing, where the GPU then runs the NPU's rows too)
+and on the 27B it moves the answers toward the GPU's. With one
+2,048-token prompt per batch, as in prefill, and every piece shared: mean
+KL 0.0025, maximum 0.031 (0.0034 and 0.15 without the split). With four
+512-token sequences per batch: 0.0028 and 0.029 (0.0034 and 0.25). After a
+2,887-token prompt that asks for a passage again word for word, zest writes
+the GPU's 24 tokens with the split and without it.
+
+Measured with the GPU to itself, 2,048 tokens (1,024 in brackets), on the
+kernel with resident activations (below):
+
+| | tokens/s |
+|---|---|
+| GPU alone | 346.0 (364.9) |
+| zest, no split | 323.8 (325.9) |
+| split 50% | 353.8 (360.2) |
+| split 25% (NPU 512 rows) | 343.4 |
+| split 75% (NPU 1,536 rows) | 339.7 |
+| all 64 layers on the NPU (28 GB), no split | 318.3 |
+| all 64 layers, split 50% | 359.4 |
+
+The first zest figures above the GPU alone at the same micro-batch, but far
+from the paper figure, and the trace says why: only 142 of 218 pieces a
+prompt were shared, and the ones left out were the largest. In the 27B's
+linear-attention layers (39 of the 52 on the NPU), the piece with the qkv
+multiply and the piece with the feed-forward block each end with a view
+that computes nothing: a transpose of the piece's own result for an op
+outside it, or a reshape of the next layer's recurrent state. llama.cpp's
+scheduler leaves a view where it falls in the node order, which puts these
+in the piece before them, and the row view refused the whole piece for a
+tensor whose rows don't run along its last dimension. Those pieces were
+2.6 s of the 3.5 s a prompt spent in pieces. (A first guess, an op done in
+place, was wrong; the row view takes those now too, and the block test has
+one.) A view is now part of the GPU's share only if an op of the piece
+reads it. The block test ends with both kinds of view, and its split test
+fails unless the trace says the piece was shared: before, it passed either
+way.
+
+With every piece shared (2026-11-19, 02:22-02:35, the GPU to itself, the
+controls as before), tokens/s:
+
+| | 1,024 tokens | 2,048 | 4,096 |
+|---|---|---|---|
+| GPU alone | 366.9 | 343.6 | 331.5 |
+| zest, no split | 324.1 | 322.5 | 313.1 |
+| split 50% | 440.5 | 431.5 | 414.5 |
+| split 25% (NPU 512 of 2,048 rows) | | 374.1 | |
+| split 75% (NPU 1,536) | | 375.4 | |
+| all 64 layers on the NPU (28 GB), no split | | 317.4 | |
+| all 64 layers, split 50% | | 469.1 | |
+| all 64 layers, split 25%, 75% | | 383.2, 388.2 | |
+
+That is the paper figure: 1.26x the GPU alone at 2,048 tokens with the
+default 20 GB of weight copies and 1.37x with every layer on the NPU, where
+without the split more layers on the NPU lose. Per 2,048-token prompt, in
+seconds:
+
+| | no split | split 50% | split 50%, 64 layers |
+|---|---|---|---|
+| whole prompt | 6.35 | 4.75 | 4.37 |
+| in zest's pieces | 4.03 | 2.55 | 3.28 |
+| of that: waiting on the NPU | 2.90 | 1.62 | 2.11 |
+| host passes, reads, writes | 1.11 | 0.75 | 0.92 |
+| waiting for the GPU's rows after the NPU's | | 0.16 | 0.21 |
+| the GPU alone on the rest | 2.32 | 2.20 | 1.09 |
+
+Half each is close to balanced (the pieces wait 0.16 s for the GPU's rows;
+at 25% they wait 1.88 s), and a micro-batch of 2,048 allows only quarters.
+
+It also holds when the GPU has other work. With a second job of this
+session's own generating tokens from the 27B on the GPU throughout (04:53,
+2,048 tokens, one round): GPU alone 237.0, zest without the split 199.7,
+split 50% 290.7 (282.7-298.7), NPU 25% of the rows 270.1, NPU 75% 249.2.
+Right after, with the GPU to itself again: 342.6 and 430.6. So 1.23x the
+GPU alone there, against 1.26x quiet. The evening's figure that had the
+split losing on a busy GPU (229 against 196-260 without, in different
+windows) came from the build that left the largest pieces whole.
+
+On three other models (05:22, 2,048 tokens, n=3, the GPU and the NPU held;
+KL against the GPU with one 2,048-token prompt per batch), every piece
+shared and no NPU failure in each:
+
+| | GPU alone | zest, no split | split 50% | mean KL, no split | with the split |
+|---|---|---|---|---|---|
+| Qwen3.5-2B Q4_K_M | 3,456 | 3,094 | 4,060 | 0.0028 | 0.0017 |
+| Qwen3.5-9B Q4_K_M | 1,081 | 976 | 1,341 | 0.0041 | 0.0024 |
+| Qwen3-Coder-30B-A3B Q4_K_M (mixture of experts) | 1,718 | 1,048 | 1,370 | 0.0045 | 0.0035 |
+
+The dense models go from behind the GPU alone to 1.17x and 1.24x of it.
+The mixture-of-experts model stays behind it (0.80x, from 0.61x); why is
+not traced yet.
+
+The quantized-weight kernel (`GGML_XDNA_WEIGHTS=quant`, all 64 layers in
+16 GB of copies) gains from the split too, but stays behind (04:19, 2,048
+tokens, GPU alone 342.5 and the default kernel's split 431.2 in the same
+turn): 234.2 without the split, 308.4 at 50%, 370.9 at 25%, where the NPU
+has so few rows that the kernel matters little. Its answers with the split:
+mean KL 0.0025, maximum 0.037 (0.0041 and 0.14 without), every piece
+shared. So it is not the way to every layer on the NPU at speed: that costs
+28 GB of copies with the default kernel.
 
 **Activations resident in the memtile (2026-11-18, in the shipped kernel).**
 The BFP16 kernel is held by DRAM at about 50 GB/s of the port's 57 (21

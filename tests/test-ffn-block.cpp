@@ -3,8 +3,10 @@
 // norm, the gate and up multiplies, their SwiGLU, the down multiply and the
 // residual add, the weights in a weight buffer. The backend fuses gate and up
 // and chains the down multiply behind them (one NPU submission, the SwiGLU
-// never coming to the host); with GGML_XDNA_CHAIN=0 a host pass sits between.
-// Either way, the result has to stay close to the CPU backend's on the
+// never coming to the host); with GGML_XDNA_CHAIN=0 a host pass sits between,
+// and with GGML_XDNA_SPLIT the GPU runs part of the rows at the same time
+// (the split test also looks for the trace line that says the piece was shared).
+// Whichever way, the result has to stay close to the CPU backend's on the
 // same bytes, and the NPU must not have failed on the way (when it does the
 // GPU finishes the work, with the right answer: GGML_XDNA_FAIL_AFTER tests
 // that).
@@ -85,6 +87,11 @@ static bool build(block & b, ggml_backend_t backend, const std::vector<uint8_t> 
     ggml_set_output(b.out);
     b.gf = ggml_new_graph(b.ctx);
     ggml_build_forward_expand(b.gf, b.out);
+    // Views that follow the block's last op, as llama.cpp's scheduler leaves them in a piece: the result turned for
+    // an op outside it, and a reshape of something with no token rows at all (another layer's state). They compute
+    // nothing, and must not keep the GPU from taking its share of the rows.
+    ggml_build_forward_expand(b.gf, ggml_transpose(b.ctx, b.out));
+    ggml_build_forward_expand(b.gf, ggml_reshape_2d(b.ctx, ggml_new_tensor_1d(b.ctx, GGML_TYPE_F32, 24), 6, 4));
     b.buf = ggml_backend_alloc_ctx_tensors(b.ctx, backend);
     if (!b.buf) return false;
     ggml_backend_tensor_set(b.x, x.data(), 0, x.size() * sizeof(float));
@@ -139,6 +146,7 @@ int main() {
     bool all = true;
     for (int i = 0; i < ggml_graph_n_nodes(on_npu.gf); i++) {
         ggml_tensor * n = ggml_graph_node(on_npu.gf, i);
+        if (n->op == GGML_OP_TRANSPOSE || n->op == GGML_OP_RESHAPE) continue;  // a view goes where its source went
         if (ggml_backend_supports_op(xdna, n) || (host_only && *host_only && n->op != GGML_OP_MUL_MAT)) continue;
         printf("not taken: %s\n", ggml_op_name(n->op));
         all = false;

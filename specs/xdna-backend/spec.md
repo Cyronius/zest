@@ -990,6 +990,64 @@ fall from 576 to 520.
 
 ---
 
+### XDNA-ROW-SPLIT: The GPU can run part of a piece's rows at the same time (experimental)
+**Applies to:** Zest
+**Test category:** integration
+
+Off by default. With `GGML_XDNA_SPLIT=<percent>` the backend shall give the
+NPU that share of each claimed piece's rows (rounded to whole 512s, at least
+512 for each device; pieces under 1,024 rows are not split) and run the
+remaining rows of the same piece on the GPU at the same time: every op in a
+claimed piece works row by row, so the two halves are independent.
+
+- The GPU's share is the piece's own graph over those rows: the same ops in
+  the same order, each tensor a view of the original's memory (llama.cpp's
+  memory plan for the piece is reused between its nodes in that order), so
+  the GPU reads its inputs and writes its results in place, with no copy
+  through the host.
+- The GPU's share shall run only between the piece's reads of its inputs
+  and its writes of its results, and the backend shall wait for it before
+  those writes: the two never use the Vulkan backend at once.
+- If the NPU fails in a split piece, the GPU shall run the NPU's rows as
+  well (and only those: its own are done, in place), and the run continues
+  as in XDNA-NPU-FAILURE.
+- A reshape, slice or transpose computes nothing, and llama.cpp's scheduler
+  leaves any that follow a piece's last op inside the piece, whatever they
+  are views of (the 27B's pieces end with a transpose of their own result,
+  or a reshape of the next layer's recurrent state). Such a view is part of
+  the GPU's share only if an op of the piece reads it.
+- A piece with something the row view doesn't cover (an op's tensor whose
+  rows don't run along its last dimension in use, a computed scale or bias
+  row) is not split, and `GGML_XDNA_TRACE=1` says which.
+
+The answers move toward the GPU's own: its rows are exactly what the GPU
+alone computes.
+
+**Acceptance criteria** (`tests/test-ffn-block.cpp`, on the NPU):
+- `ffn-block-npu-split`: with `GGML_XDNA_SPLIT=50`, the block's result stays
+  as close to the CPU's as without it, the NPU has not failed, and the trace
+  says the piece was shared (the block ends with a transpose of its result
+  and a reshape of an unrelated tensor, as the 27B's pieces do)
+- `ffn-block-npu-split-fail`: with `GGML_XDNA_FAIL_AFTER=0` as well, the
+  backend reports the failure and the block's result is still close to the
+  CPU's
+
+**Verification (manual, the model):** the KL divergence check and a
+24-token reply after a prompt over 1,024 tokens on Qwen3.8-27B with
+`GGML_XDNA_SPLIT=50`; `GGML_XDNA_TRACE=1` prints how many pieces were
+shared.
+
+**Status 2026-11-19:** passing. With the GPU to itself and every piece
+shared, a 50% split gave 431.5 tokens/s at 2,048 tokens on Qwen3.8-27B
+against 322.5 without and 343.6 for the GPU alone, and 469.1 with all 64
+layers on the NPU (`specs/npu-qgemm/plan.md`,
+`docs/results/halo-npu-chain-2026-11-18.json`). With the split the mean KL
+divergence against the GPU was 0.0025 with one 2,048-token prompt per batch
+(0.0034 without it), every piece shared and no NPU failure, and a 24-token
+reply after a 2,887-token prompt was the GPU's. Still off by default.
+
+---
+
 ### XDNA-INSTS-GEN: The backend's NPU instruction streams match the toolchain's
 **Applies to:** Zest
 **Test category:** unit

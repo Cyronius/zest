@@ -225,6 +225,10 @@ struct xdna_context {
     int64_t matmuls = 0, pieces = 0;
     int64_t late_copies = 0;  // NPU weight copies built inside a piece, not at load
     int64_t gpu_pieces = 0;   // pieces the GPU ran after an NPU failure
+    // split pieces (GGML_XDNA_SPLIT): how many, the GPU's time on its rows,
+    // and how long the NPU's side then waited for it
+    int64_t split_pieces = 0;
+    double split_gpu_ms = 0, split_wait_ms = 0;
 
 #ifdef XDNA_HAVE_NPU
     // the NPU, started on first use; null in host-only mode or once it failed
@@ -360,13 +364,14 @@ struct xdna_context {
         return pin ? ggml_backend_buffer_get_base(pin) : nullptr;
     }
 
-    // a tensor from Vulkan memory into host memory, the GPU doing the copy
-    void read(const ggml_tensor * t, void * dst) {
+    // a tensor (or its first `bytes`) from Vulkan memory into host memory, the GPU doing the copy
+    void read(const ggml_tensor * t, void * dst, size_t bytes = 0) {
+        if (!bytes) bytes = ggml_nbytes(t);
         if (t->buffer && ggml_backend_buffer_is_host(t->buffer)) {  // a graph input the CPU holds
-            memcpy(dst, t->data, ggml_nbytes(t));
+            memcpy(dst, t->data, bytes);
             return;
         }
-        ggml_backend_tensor_get_async(vk, t, dst, 0, ggml_nbytes(t));
+        ggml_backend_tensor_get_async(vk, t, dst, 0, bytes);
         ggml_backend_synchronize(vk);
     }
 
@@ -809,6 +814,145 @@ static bool xdna_gpu_compute(xdna_context & ctx, ggml_cgraph * g) {
     return ok;
 }
 
+// GGML_XDNA_SPLIT=<percent>: an experiment. The NPU takes that share of a
+// piece's rows (in whole 512s) and the GPU the rest of them at the same time,
+// so both devices multiply at once instead of taking turns. Off (0) by
+// default.
+static int64_t xdna_split_percent() {
+    static const int64_t v = env_int("GGML_XDNA_SPLIT", 0);
+    return v;
+}
+
+// An op that computes nothing: its result is its input's memory, seen another way.
+static bool xdna_is_view_op(ggml_op op) {
+    return op == GGML_OP_NONE || op == GGML_OP_RESHAPE || op == GGML_OP_VIEW || op == GGML_OP_PERMUTE || op == GGML_OP_TRANSPOSE;
+}
+
+// A piece's graph over rows [r0, r1) of its per-row tensors, for the GPU: the
+// same ops in the same order (the memory llama.cpp planned for the piece is
+// reused between its nodes in that order), each tensor a view of those rows of
+// the original's memory, so the GPU reads the piece's inputs and writes its
+// results in place.
+struct xdna_rows_graph {
+    ggml_context * ctx = nullptr;
+    ggml_cgraph * g = nullptr;
+    xdna_rows_graph() = default;
+    xdna_rows_graph(const xdna_rows_graph &) = delete;
+    ~xdna_rows_graph() { if (ctx) ggml_free(ctx); }
+};
+
+// False if the piece has something this doesn't split (then it isn't split;
+// `why` says what).
+static bool xdna_rows_view(xdna_context & ctx, const ggml_cgraph * g, int64_t T, int64_t r0, int64_t r1, xdna_rows_graph & out,
+                           std::string & why) {
+    const size_t max_tensors = (size_t) g->n_nodes * (1 + GGML_MAX_SRC) + 8;
+    ggml_init_params ip = { ggml_tensor_overhead() * max_tensors + ggml_graph_overhead_custom(max_tensors, false), nullptr, true };
+    out.ctx = ggml_init(ip);
+    if (!out.ctx) return false;
+    std::unordered_set<const ggml_tensor *> in_piece;
+    for (int i = 0; i < g->n_nodes; i++)
+        if (g->nodes[i]->op != GGML_OP_NONE) in_piece.insert(g->nodes[i]);
+    std::unordered_map<const ggml_tensor *, ggml_tensor *> view;
+    std::vector<std::pair<const ggml_tensor *, ggml_tensor *>> host_inputs;  // (original, its view) for inputs in host memory
+    bool ok = true;
+    // t's rows [r0, r1), along dimension d: one of the piece's ops with the
+    // same inputs' rows, or for an input from outside, a leaf
+    std::function<ggml_tensor *(const ggml_tensor *, int)> rows = [&](const ggml_tensor * t, int d) -> ggml_tensor * {
+        auto it = view.find(t);
+        if (it != view.end()) return it->second;
+        const bool node = in_piece.count(t) != 0;
+        // Rows along the last dimension in use, so a row range is one stretch
+        // of memory whatever the strides inside a row. An op that shares
+        // another tensor's memory (a reshape, a slice, an op done in place)
+        // shares the same rows of it.
+        if (t->ne[d] != T || (node && t->view_src && t->view_src->ne[xdna_exec_row_dim(t->view_src)] != T)) {
+            if (ok) why = std::string(ggml_op_name(t->op)) + " " + t->name + ": its rows don't run along its last dimension";
+            ok = false;
+            return nullptr;
+        }
+        int64_t ne[GGML_MAX_DIMS];
+        for (int i = 0; i < GGML_MAX_DIMS; i++) ne[i] = i == d ? r1 - r0 : t->ne[i];
+        ggml_tensor * v = ggml_new_tensor(out.ctx, t->type, GGML_MAX_DIMS, ne);
+        view[t] = v;
+        for (int i = 0; i <= d; i++) v->nb[i] = t->nb[i];  // the original's strides (a slice's are its source's)
+        for (int i = d + 1; i < GGML_MAX_DIMS; i++) v->nb[i] = v->nb[i - 1] * (size_t) v->ne[i - 1];
+        ggml_set_name(v, t->name);
+        v->buffer = t->buffer;
+        if (!node) {
+            // wherever it comes from, its memory holds it whole
+            if (t->buffer && ggml_backend_buffer_is_host(t->buffer)) host_inputs.push_back({ t, v });  // placed below
+            else v->data = (char *) t->data + r0 * (int64_t) t->nb[d];
+            return v;
+        }
+        v->op = t->op;
+        memcpy(v->op_params, t->op_params, sizeof(v->op_params));
+        v->flags = t->flags;
+        if (t->view_src) {
+            ggml_tensor * o = rows(t->view_src, xdna_exec_row_dim(t->view_src));
+            if (!o) return nullptr;
+            v->view_src = o;
+            v->view_offs = t->view_offs;
+            v->buffer = o->buffer;
+            v->data = (char *) o->data + t->view_offs;
+        } else {
+            v->data = (char *) t->data + r0 * (int64_t) t->nb[d];
+        }
+        for (int j = 0; j < GGML_MAX_SRC; j++) {
+            const ggml_tensor * s = t->src[j];
+            if (!s) continue;
+            const int sd = xdna_exec_row_dim(t, j);
+            if (sd < 0 && s->op != GGML_OP_NONE) {  // a weight or a parameter row is a leaf
+                if (ok) why = std::string(ggml_op_name(t->op)) + " " + t->name + ": a computed weight or parameter row";
+                ok = false;
+            }
+            v->src[j] = sd < 0 ? (ggml_tensor *) s : rows(s, sd);
+            if (!v->src[j] || !ok) return nullptr;
+        }
+        return v;
+    };
+    out.g = ggml_new_graph_custom(out.ctx, max_tensors, false);
+    for (int i = 0; i < g->n_nodes && ok; i++) {
+        const ggml_tensor * n = g->nodes[i];
+        // A reshape or a transpose computes nothing, and llama.cpp's
+        // scheduler leaves any that follow a piece's last op in the piece,
+        // whatever they are of (another layer's state, or a result of the
+        // piece turned for an op outside it). Only one that an op of the
+        // piece reads matters here, and that op brings it in.
+        if (xdna_is_view_op(n->op)) continue;
+        ggml_tensor * v = rows(n, xdna_exec_row_dim(n));
+        // one at a time, so the nodes keep the piece's order
+        if (v) ggml_build_forward_expand(out.g, v);
+    }
+    if (!ok) return false;
+    // inputs the CPU holds (rotary positions): their rows, copied into the GPU's memory
+    const xdna_vk & vk = xdna_vulkan();
+    const size_t align = ggml_backend_buft_get_alignment(vk.buft);
+    size_t need = 0;
+    for (const auto & h : host_inputs) need += GGML_PAD(ggml_nbytes(h.second), align);
+    if (need > ctx.gpu_in_size) {
+        if (ctx.gpu_in) ggml_backend_buffer_free(ctx.gpu_in);
+        ctx.gpu_in = ggml_backend_buft_alloc_buffer(vk.buft, need);
+        ctx.gpu_in_size = ctx.gpu_in ? need : 0;
+        if (!ctx.gpu_in) return false;
+    }
+    size_t off = 0;
+    for (const auto & h : host_inputs) {
+        ggml_tensor * v = h.second;
+        const int d = xdna_exec_row_dim(h.first);
+        v->buffer = ctx.gpu_in;
+        v->data = (char *) ggml_backend_buffer_get_base(ctx.gpu_in) + off;
+        ggml_backend_tensor_set(v, (const char *) h.first->data + r0 * (int64_t) h.first->nb[d], 0, ggml_nbytes(v));
+        off += GGML_PAD(ggml_nbytes(v), align);
+    }
+    // the piece's views of those inputs were made before their memory was known
+    for (auto & kv : view)
+        if (kv.second->view_src && kv.second->view_src->buffer == ctx.gpu_in) {
+            kv.second->buffer = ctx.gpu_in;
+            kv.second->data = (char *) kv.second->view_src->data + kv.second->view_offs;
+        }
+    return true;
+}
+
 static bool xdna_trace();
 static void xdna_trace_piece(const ggml_cgraph * cgraph);
 static bool xdna_blocks();
@@ -870,6 +1014,12 @@ static ggml_status ggml_backend_xdna_graph_compute(ggml_backend_t backend, ggml_
             fprintf(stderr, "xdna weight preparation: shapes %.1f, allocate %.1f, dequant+encode %.1f, sync %.1f ms\n",
                     n.weight_shape_ms, n.weight_alloc_ms, n.weight_encode_ms, n.weight_upload_ms);
             if (c.gpu_pieces) fprintf(stderr, "xdna: %lld pieces on the GPU after the NPU failed\n", (long long) c.gpu_pieces);
+            if (c.split_pieces)
+                fprintf(stderr, "xdna split: %lld pieces shared with the GPU, %.1f ms handing it its rows, %.1f ms waiting for "
+                                "them after the NPU's\n",
+                        (long long) c.split_pieces, c.split_gpu_ms, c.split_wait_ms);
+            c.split_pieces = 0;
+            c.split_gpu_ms = c.split_wait_ms = 0;
             xdna_pass_ms = 0;
             xdna_passes = 0;
             c.build_wait_ms = 0;
@@ -913,14 +1063,14 @@ static ggml_status ggml_backend_xdna_graph_compute(ggml_backend_t backend, ggml_
             return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
         };
         xdna_io io;
-        io.read = [&](const ggml_tensor * t, void * dst) {
+        io.read = [&](const ggml_tensor * t, void * dst, size_t bytes) {
             const auto t0 = std::chrono::steady_clock::now();
-            ctx.read(t, dst);
+            ctx.read(t, dst, bytes);
             ctx.read_ms += since(t0);
         };
-        io.write = [&](ggml_tensor * t, const void * src) {
+        io.write = [&](ggml_tensor * t, const void * src, size_t bytes) {
             const auto t0 = std::chrono::steady_clock::now();
-            ggml_backend_tensor_set(t, src, 0, ggml_nbytes(t));
+            ggml_backend_tensor_set(t, src, 0, bytes);
             ctx.write_ms += since(t0);
         };
         io.param = [&](const ggml_tensor * t) { return ctx.param(t); };
@@ -952,15 +1102,79 @@ static ggml_status ggml_backend_xdna_graph_compute(ggml_backend_t backend, ggml_
         io.weight_bytes = [&](const ggml_tensor * w) -> const void * { return ctx.weight(w).data(); };
         std::string err;
         bool ok = false;
-        if (npu) {
-            ok = xdna_exec_piece(cgraph, npu, npu->pool(), io, xdna_streams(), err);
-            ctx.pool_release();
-            if (!ok) xdna_npu_failed(err);
+        // The split (GGML_XDNA_SPLIT): the NPU's rows come first, the GPU
+        // runs the rest while the NPU works. The GPU's share reads and writes
+        // the tensors' own memory, so it runs only between the piece's reads
+        // and its writes.
+        int64_t T = 0, npu_rows = 0;
+        for (int i = 0; i < cgraph->n_nodes && !T; i++)
+            if (!xdna_is_view_op(cgraph->nodes[i]->op)) T = cgraph->nodes[i]->ne[xdna_exec_row_dim(cgraph->nodes[i])];
+        xdna_rows_graph gpu_rows;
+        std::thread gpu_thread;
+        bool gpu_started = false, gpu_ok = true;
+        double gpu_ms = 0;
+        if (npu && xdna_split_percent() > 0 && T >= 1024) {
+            npu_rows = std::min(T - 512, std::max<int64_t>(512, (T * xdna_split_percent() / 100 + 256) / 512 * 512));
+            std::string why;
+            if (!xdna_rows_view(ctx, cgraph, T, npu_rows, T, gpu_rows, why)) {
+                if (xdna_trace()) fprintf(stderr, "xdna split: a piece not shared (%s)\n", why.empty() ? "no memory" : why.c_str());
+                npu_rows = 0;
+            }
         }
-        // a failed piece wrote nothing back: the GPU runs it again, or the host if the GPU can't
-        if (!ok && g_npu_broken) ok = xdna_gpu_compute(ctx, cgraph);
+        if (npu_rows) {
+            io.inputs_read = [&] {
+                gpu_started = true;
+                gpu_thread = std::thread([&] {
+                    const auto t0 = std::chrono::steady_clock::now();
+                    gpu_ok = ggml_backend_graph_compute(ctx.vk, gpu_rows.g) == GGML_STATUS_SUCCESS;
+                    gpu_ms = since(t0);
+                });
+            };
+            io.before_write = [&](std::string & e) {
+                const auto t0 = std::chrono::steady_clock::now();
+                if (gpu_thread.joinable()) gpu_thread.join();
+                // Vulkan's compute may return with work still queued: wait for the rows themselves
+                ggml_backend_synchronize(ctx.vk);
+                ctx.split_wait_ms += since(t0);
+                ctx.split_gpu_ms += gpu_ms;
+                ctx.split_pieces++;
+                if (!gpu_ok) e = "the GPU's share of a piece failed";
+                return gpu_ok;
+            };
+        }
+        if (npu) {
+            ok = xdna_exec_piece(cgraph, npu, npu->pool(), io, xdna_streams(), err, npu_rows);
+            ctx.pool_release();
+            if (gpu_thread.joinable()) {  // the NPU's side failed before its writes
+                gpu_thread.join();
+                ggml_backend_synchronize(ctx.vk);
+            }
+            if (!ok && gpu_ok) xdna_npu_failed(err);
+        }
+        io.inputs_read = nullptr;
+        io.before_write = nullptr;
+        if (!gpu_ok) {
+            GGML_LOG_ERROR("%s: %s\n", __func__, err.c_str());
+            return GGML_STATUS_FAILED;
+        }
+        // A failed piece wrote nothing back: the GPU runs it again, or the
+        // host if the GPU can't. After a split whose GPU share ran, the GPU
+        // has done its rows (in place, so they can't be run again): only the
+        // NPU's are left.
+        if (!gpu_started) npu_rows = 0;
+        if (!ok && g_npu_broken) {
+            if (npu_rows) {
+                xdna_rows_graph rest;
+                std::string why;
+                ok = xdna_rows_view(ctx, cgraph, T, 0, npu_rows, rest, why) &&
+                     ggml_backend_graph_compute(ctx.vk, rest.g) == GGML_STATUS_SUCCESS;
+                ctx.gpu_pieces++;
+            } else {
+                ok = xdna_gpu_compute(ctx, cgraph);
+            }
+        }
         if (!ok) {
-            ok = xdna_exec_piece(cgraph, nullptr, ctx.host_threads(), io, 1, err);
+            ok = xdna_exec_piece(cgraph, nullptr, ctx.host_threads(), io, 1, err, npu_rows);
             ctx.pool_release();
         }
         if (!ok) {

@@ -1,0 +1,294 @@
+{
+ "date": "2026-11-18 (evening); the section row_split_every_piece_shared 2026-11-19, 02:22-05:24",
+ "machine": "Ryzen AI MAX+ 395 / Radeon 8060S / XDNA2, 128 GB, Arch (Omarchy), Linux 7.2.15; power profile performance. Two kinds of figures. Until 21:45 another session's LLM server (a 35B model) kept the GPU at 95-100% busy, so the GPU and DRAM (which the NPU kernel is bound by) were shared: every section but one below is from then, comparing runs taken in turn under that load. The section with_the_gpu_to_itself is the exception: a turn with nobody else on the GPU, whose controls match the morning's quiet-machine figures.",
+ "software": "llama.cpp b10944 Linux Vulkan release, Mesa 26.2.5 RADV, xrt 2.21.75; zest before: e54ff8c (whole_array_bfp_rtp kernel, restructured loop); zest after: the by-column kernel with feed-forward chains and resident activations (8fa7414), then the row split (the commit this record comes with)",
+ "model": "Qwen3.8-27B Q4_K_M (17.66 GiB)",
+ "with_the_gpu_to_itself": {
+  "when": "21:50-22:12, a turn on the GPU held through the machine's scheduler: nobody else on the GPU (the other session's LLM server had ended), other sessions' CPU work at a load average of 3-8. GPU alone and the build before reproduce the morning's quiet figures (365 / 346 and 303 / 300 against 367 / 349 and 301 / 298), so these stand as quiet-machine numbers.",
+  "npu_gemm_ms_1024_rows": {
+   "method": "bench-npu-gemm, median of 15, the kernel with chains (A relayed) and the resident kernel in turn, twice",
+   "relayed": {"gdn_qkv_5120x10240": [4.71, 4.65], "gdn_z_5120x6144": [2.86, 2.85], "fa_q_gate_5120x12288": [5.64, 5.55], "fa_k_5120x1024": [0.58, 0.57], "o_proj_6144x5120": [2.83, 2.82], "gate_up_fused_5120x34816_bf16": [17.35, 16.95], "gate_up_fused_as_next_A": [17.38, 16.93], "down_17408x5120": [7.76, 7.62], "all_ms": [59.1, 57.93], "all_tflops": [21.8, 22.24], "all_gb_s": [50.2, 51.2]},
+   "resident": {"gdn_qkv_5120x10240": [4.06, 4.01], "gdn_z_5120x6144": [2.49, 2.5], "fa_q_gate_5120x12288": [4.8, 4.76], "fa_k_5120x1024": [0.59, 0.57], "o_proj_6144x5120": [2.82, 2.84], "gate_up_fused_5120x34816_bf16": [14.64, 14.63], "gate_up_fused_as_next_A": [14.68, 14.68], "down_17408x5120": [7.62, 7.64], "all_ms": [51.69, 51.65], "all_tflops": [24.93, 24.95], "all_gb_s": [36.1, 36.1]},
+   "reading": "resident calls run at 26.5-27.1 TFLOPS (the fused gate/up, with its SiLU step, 24.9): the limit of a core's B stream, 9,216 bytes per K chunk on one 32-bit stream. The kernel before the by-column layout ran these shapes at 21.4-21.7 that morning."
+  },
+  "prefill_tokens_s": {
+   "method": "prefill bench, -ngl 99 -n 0 -b 2048 -ub 2048 -r 2, configurations in turn, two rounds: median of 4 (min-max)",
+   "gpu_alone": {"pp1024": "364.9 (364.2-365.1)", "pp2048": "346.0 (345.4-346.6)"},
+   "before_e54ff8c": {"pp1024": "303.3 (303.0-304.2)", "pp2048": "300.0 (298.7-300.6)"},
+   "by_column_kernel_with_chains": {"pp1024": "310.2 (307.7-310.6)", "pp2048": "305.6 (305.2-305.8)"},
+   "resident_activations_as_well": {"pp1024": "325.9 (325.0-326.4)", "pp2048": "323.8 (322.9-324.1)"},
+   "row_split_50": {"pp1024": "360.2 (359.8-360.6)", "pp2048": "353.8 (353.0-355.0)"},
+   "row_split_25": {"pp1024": "359.6", "pp2048": "343.4 (342.1-344.3)"},
+   "row_split_75": {"pp1024": "360.0", "pp2048": "339.7 (339.5-339.8)"},
+   "all_64_layers_28_gb_limit_pp2048": {"no_split": 318.3, "split_50": 359.4, "split_25": 345.6, "note": "n=2 each"},
+   "note": "at 1,024 tokens every split is 512 rows each. In these runs the split shared only 142 of 218 pieces a prompt, and not the largest: see row_split_every_piece_shared for why, and for the figures once they were"
+  },
+  "per_2048_token_prompt_s_resident_52_layers": {"in_pieces": 4.01, "waiting_on_npu": 2.87, "host_passes": 0.51, "write_results": 0.42, "read_inputs": 0.16, "whole_prompt": 6.34},
+  "per_2048_token_prompt_s_split_50": {"in_pieces": 3.53, "waiting_on_npu": 2.5, "host_passes": 0.45, "write_results": 0.35, "read_inputs": 0.13, "whole_prompt": 5.81},
+  "kl_resident_kernel": {"mean_kld": 0.003445, "max_kld": 0.251934, "same_top_pct": 96.275, "quant": 0.004153, "split_50": 0.003186}
+ },
+ "row_split_every_piece_shared": {
+  "when": "2026-11-19, 02:22-02:35, a turn on the GPU and the NPU held through the machine's scheduler, nobody else on the GPU, load average 2-8 from other sessions' CPU work. GPU alone and zest without the split reproduce the evening's figures (343.6 and 322.5 at 2,048 tokens against 346.0 and 323.8).",
+  "what_changed": "In the 27B's linear-attention layers (39 of the 52 on the NPU) the piece with the qkv multiply and the piece with the feed-forward block each end with a view that computes nothing: a transpose of the piece's own result (qkv_mixed_transposed) for an op outside it, or a reshape of the next layer's recurrent state (cache_r_l<n> (reshaped)). llama.cpp's scheduler leaves a view where it falls in the node order, so these sit in the piece before them, and the row view refused the whole piece for a tensor whose rows don't run along its last dimension: 76 of 218 pieces a prompt, 2.6 s of the 3.5 s spent in pieces. (The evening's guess, an op done in place, was wrong: with that allowed, a rerun at 00:50 gave the same 353.0 and the same 142 shared pieces.) A view is now part of the GPU's share only if an op of the piece reads it; all 218 pieces are shared.",
+  "prefill_tokens_s": {
+   "method": "prefill bench, -ngl 99 -n 0 -b 2048 -ub 2048 -r 2, configurations in turn, two rounds: median of 4 (min-max); the all-64-layer and 4,096-token rows one round, n=2",
+   "gpu_alone": {
+    "pp1024": "366.9 (365.4-367.1)",
+    "pp2048": "343.6 (342.6-344.2)",
+    "pp4096": "331.5 (330.7-332.2)"
+   },
+   "zest_no_split": {
+    "pp1024": "324.1 (323.2-325.2)",
+    "pp2048": "322.5 (321.9-322.8)",
+    "pp4096": "313.1 (312.7-313.5)"
+   },
+   "row_split_50": {
+    "pp1024": "440.5 (439.3-441.5)",
+    "pp2048": "431.5 (429.7-432.0)",
+    "pp4096": "414.5 (414.0-415.0)"
+   },
+   "row_split_25": {
+    "pp1024": "440.8",
+    "pp2048": "374.1 (372.9-374.9)"
+   },
+   "row_split_75": {
+    "pp1024": "440.7",
+    "pp2048": "375.4 (374.4-376.2)"
+   },
+   "all_64_layers_28_gb_limit_pp2048": {
+    "no_split": 317.4,
+    "split_50": 469.1,
+    "split_25": 383.2,
+    "split_75": 388.2
+   },
+   "note": "at 1,024 tokens every split is 512 rows each. Split 50% is 1.26x the GPU alone at 2,048 tokens (1.20x at 1,024, 1.25x at 4,096), 1.37x with every layer on the NPU."
+  },
+  "per_2048_token_prompt_s": {
+   "method": "GGML_XDNA_TRACE=1 GGML_XDNA_TRACE_EVERY=1, the last of three prompts; the traced runs gave 430 and 467 tokens/s (no split: the 00:50 trace, 4.03 s in pieces)",
+   "no_split": {
+    "whole_prompt": 6.35,
+    "in_pieces": 4.03,
+    "waiting_on_npu": 2.9,
+    "host_passes": 0.51,
+    "write_results": 0.42,
+    "read_inputs": 0.18
+   },
+   "split_50": {
+    "whole_prompt": 4.75,
+    "in_pieces": 2.55,
+    "waiting_on_npu": 1.62,
+    "host_passes": 0.4,
+    "write_results": 0.25,
+    "read_inputs": 0.1,
+    "waiting_for_gpu_rows": 0.16,
+    "pieces_shared": "218 of 218"
+   },
+   "split_25": {
+    "in_pieces": 3.27,
+    "waiting_on_npu": 0.98,
+    "host_passes": 0.19,
+    "write_results": 0.13,
+    "read_inputs": 0.07,
+    "waiting_for_gpu_rows": 1.88
+   },
+   "split_50_all_64_layers": {
+    "whole_prompt": 4.37,
+    "in_pieces": 3.28,
+    "waiting_on_npu": 2.11,
+    "host_passes": 0.5,
+    "write_results": 0.3,
+    "read_inputs": 0.12,
+    "waiting_for_gpu_rows": 0.21,
+    "pieces_shared": "273 of 273"
+   },
+   "by_piece_split_50": "36 pieces of four multiplies (o, gate, up, down) 35.9 ms each against 56.8 unshared; 12 of five 45.1 against 69.2; 149 of one multiply 4.1 against 6.7"
+  },
+  "tests": "all 11 host and 13 NPU tests pass on this build; ffn-block-npu-split now ends its block with both kinds of view and fails unless the trace says the piece was shared",
+  "kl_four_512_token_sequences_per_batch": {
+   "split_50": {
+    "mean_kld": 0.002763,
+    "max_kld": 0.029011,
+    "same_top_pct": 96.078
+   },
+   "no_split": {
+    "mean_kld": 0.003445,
+    "max_kld": 0.251934,
+    "same_top_pct": 96.275
+   },
+   "pieces_shared": "every one (458 trace lines, none not shared), 04:18"
+  },
+  "kl_one_2048_token_sequence_per_batch": {
+   "method": "the same text, -c 2048 -b 2048 -ub 2048 --chunks 2 (one long prompt per batch, as in prefill), against the GPU's logits for the same batches; 04:15-04:19, the GPU and the NPU held",
+   "split_50": {
+    "mean_kld": 0.002514,
+    "max_kld": 0.031164,
+    "same_top_pct": 96.628
+   },
+   "no_split": {
+    "mean_kld": 0.003388,
+    "max_kld": 0.152507,
+    "same_top_pct": 96.53
+   },
+   "pieces_shared": "every one (436 of 436, none not shared), no NPU failure"
+  },
+  "quantized_weight_kernel_with_the_split": {
+   "method": "GGML_XDNA_WEIGHTS=quant (all 64 layers, 16 GB of copies), the same prefill bench, one round (n=2), 04:19-04:21, the GPU and the NPU held; KL with one 2,048-token sequence per batch as above",
+   "prefill_tokens_s_pp2048": {"gpu_alone": 342.5, "default_kernel_split_50": 431.2, "quant_no_split": 234.2, "quant_split_50": 308.4, "quant_split_25": 370.9},
+   "kl_split_50": {"mean_kld": 0.002532, "max_kld": 0.036792, "same_top_pct": 96.774},
+   "kl_no_split": {"mean_kld": 0.004128, "max_kld": 0.138712, "same_top_pct": 95.748},
+   "pieces_shared": "every one (546 of 546), no NPU failure",
+   "reading": "the split helps this kernel as well but it stays behind the default one (308 against 431 at 50%); at 25% the NPU has 512 of 2,048 rows and the two kernels nearly meet (371 against 374). Every layer on the NPU at speed takes the default kernel and 28 GB of copies (469.1)."
+  },
+  "with_a_second_gpu_job": {
+   "method": "the same prefill bench, one round (n=2), while a second job of this session's own generated tokens from the same 27B on the GPU (256 tokens at a time, in a loop; the GPU 99% busy before the first configuration); 04:53-04:57, the GPU and the NPU held, then two configurations again with the second job ended",
+   "prefill_tokens_s_pp2048": {"gpu_alone": "237.0 (236.5-237.6)", "zest_no_split": "199.7 (199.4-200.0)", "split_50": "290.7 (282.7-298.7)", "split_25_npu_512_rows": "270.1 (268.0-272.1)", "split_75_npu_1536_rows": "249.2 (247.1-251.2)"},
+   "right_after_gpu_to_itself": {"gpu_alone": 342.6, "split_50": 430.6},
+   "reading": "split 50% is 1.23x the GPU alone with the GPU shared (1.26x quiet) and 1.46x zest without the split. The second job's own speed was not recorded."
+  },
+  "other_models": {
+   "method": "prefill bench at 2,048 tokens, -ngl 99 -n 0 -b 2048 -ub 2048 -r 3, the GPU alone, zest, zest with split 50%: median (min-max); then KL against the GPU's logits with one 2,048-token sequence per batch, traced; 05:22-05:24, the GPU and the NPU held",
+   "Qwen3.5-2B Q4_K_M": {"gpu_alone": "3456.3 (3454.7-3471.2)", "zest_no_split": "3094.3 (3093.9-3096.0)", "split_50": "4060.4 (4047.3-4096.9)", "kl_no_split": {"mean_kld": 0.002835, "max_kld": 0.0236, "same_top_pct": 96.383}, "kl_split_50": {"mean_kld": 0.001687, "max_kld": 0.023126, "same_top_pct": 97.507}, "pieces_shared": "134 of 134"},
+   "Qwen3.5-9B Q4_K_M": {"gpu_alone": "1080.8 (1079.7-1081.1)", "zest_no_split": "975.9 (971.9-976.7)", "split_50": "1341.0 (1339.6-1342.1)", "kl_no_split": {"mean_kld": 0.004125, "max_kld": 0.068638, "same_top_pct": 96.139}, "kl_split_50": {"mean_kld": 0.002434, "max_kld": 0.023753, "same_top_pct": 96.041}, "pieces_shared": "274 of 274"},
+   "Qwen3-Coder-30B-A3B-Instruct Q4_K_M (mixture of experts)": {"gpu_alone": "1717.8 (1711.9-1718.3)", "zest_no_split": "1048.3 (1038.6-1088.6)", "split_50": "1370.2 (1364.7-1390.9)", "kl_no_split": {"mean_kld": 0.004523, "max_kld": 0.141031, "same_top_pct": 96.285}, "kl_split_50": {"mean_kld": 0.003472, "max_kld": 0.08422, "same_top_pct": 96.237}, "pieces_shared": "196 of 196"},
+   "reading": "with the split the two dense models pass the GPU alone (1.17x and 1.24x; 0.90x without it) and the mixture-of-experts model stays behind it (0.80x; 0.61x without). No piece went unshared and the NPU did not fail."
+  },
+  "greedy_24_tokens": {
+   "method": "temperature 0, 24 tokens after a prompt of about 2,800 tokens (one 2,048-token micro-batch on the NPU and the GPU, the rest on the GPU): the GPU alone, zest, zest with split 50%; 04:13-04:15",
+   "passage_then_repeat_it_word_for_word_2887_tokens": "zest and zest with the split write the GPU's 24 tokens",
+   "passage_ending_mid_reference_2748_tokens": "the three agree except in the digits of an arXiv number the model invents there (GPU 2603.01496, zest 2603.00264, split 2603.01494), as on the build before: not a pass/fail prompt",
+   "prompt_tokens_s_in_these_runs": {"gpu_alone": "344.3 / 342.0", "zest_no_split": "323.6 / 322.8", "split_50": "399.3 / 392.2", "note": "2,748 / 2,887 tokens, of which the last 700 / 839 are below zest's 1,024-token floor and run on the GPU alone"}
+  }
+ },
+ "npu_gemm_ms_1024_rows": {
+  "method": "one context, host instruction streams, median of 5 rounds of 5 (by-column kernel) and bench-npu-gemm's median of 20 (kernel before), back to back under arbiter's measure mode (which saw no CPU noise; the GPU load is outside its view)",
+  "kernel_before": {
+   "gate_up_fused_5120x34816_bf16": 23.65,
+   "down_17408x5120": 11.04,
+   "gdn_qkv_5120x10240": 6.64,
+   "all_seven_shapes_tflops": 15.89
+  },
+  "by_column": {
+   "gate_up_fused_5120x34816_bf16": 22.93,
+   "gate_up_fused_5120x34816_as_next_A": 22.81,
+   "down_17408x5120": 10.87,
+   "5120x5120": 3.34
+  },
+  "note": "the kernel before ran the same shapes at 20.3-21.0 TFLOPS that morning on a quiet machine (halo-npu-qgemm-2026-11-18.json): about 16 here is what the GPU job left of DRAM"
+ },
+ "resident_activations_ms_1024_rows": {
+  "method": "the kernel with chains (A relayed from DDR for every output tile) and the kernel that keeps A in the memtiles, bench-npu-gemm median of 10, the two in turn twice; GPU at 100% for another session throughout",
+  "gdn_qkv_5120x10240": {"relayed": [7.11, 7.49], "resident": [6.27, 6.59]},
+  "gdn_z_5120x6144": {"relayed": [4.54, 4.65], "resident": [4.01, 3.95]},
+  "fa_q_gate_5120x12288": {"relayed": [9.04, 9.42], "resident": [7.66, 7.89]},
+  "fa_k_5120x1024": {"relayed": [0.86, 0.85], "resident": [0.95, 0.95], "note": "two output tiles: slower resident, so calls under three tiles stay relayed (0.79-0.85 ms in the shipped kernel)"},
+  "o_proj_6144x5120": {"relayed": [4.96, 4.32], "relayed_in_the_resident_kernel": [4.92, 4.47], "note": "K too long to keep"},
+  "gate_up_fused_5120x34816_bf16": {"relayed": [27.02, 25.35], "resident": [21.28, 21.95]},
+  "gate_up_fused_5120x34816_as_next_A": {"relayed": [25.67, 27.15], "resident": [22.09, 21.73]},
+  "down_17408x5120": {"relayed": [12.03, 12.01], "relayed_in_the_resident_kernel": [11.78, 11.6]},
+  "ddr_bytes_gate_up_as_next_A": {"relayed_mb": 822, "resident_mb": 427, "resident_gb_s": 19.4},
+  "smallest_call_512x128x512_ms": {"kernel_with_chains": 0.156, "with_the_per_call_memtile_setup_relayed": 0.196, "resident": 0.179},
+  "checks": "resident mode 3 output equals the host's packing of mode 2 byte for byte at 1024x5120x34816; resident and relayed calls in any order in one context all correct (two passes, one pass, one output tile)"
+ },
+ "c_bytes_per_1024_rows": {
+  "note": "what a call writes to DDR; before, every mode wrote the whole fp32 tile",
+  "gate_up_fused_34816": {
+   "before": 142606336,
+   "bf16": 35651584,
+   "as_next_A": 20054016
+  },
+  "bf16_output_5120": {
+   "before": 20971520,
+   "now": 10485760
+  }
+ },
+ "prefill_tokens_s_2048": {
+  "method": "prefill bench, -ngl 99 -n 0 -b 2048 -ub 2048 -p 2048 -r 2, configurations in turn",
+  "five_rounds": {
+   "before": {
+    "median": 190.8,
+    "min": 163.2,
+    "max": 197.2,
+    "n": 10
+   },
+   "by_column_with_chains": {
+    "median": 196.2,
+    "min": 193.6,
+    "max": 201.5,
+    "n": 10
+   }
+  },
+  "two_rounds_earlier": {
+   "before": 203.9,
+   "by_column_with_chains": 195.0,
+   "by_column_without_chains": 194.0,
+   "gpu_alone": 278.2,
+   "note": "n=4 each; the before samples ran 190-220"
+  },
+  "row_split_first_look": {
+   "gpu_alone": 279.1,
+   "chains": 259.8,
+   "split_50": 229.2,
+   "split_25": 234.7,
+   "split_75": 218.5,
+   "note": "n=4 each, a later window in which the load moved (chains ran 215-304). With the GPU already at 95% for someone else, giving it half of every piece's rows cannot show what the split does on a free GPU. Not a result."
+  }
+ },
+ "host_work_per_196_multiplies": {
+  "method": "GGML_XDNA_TRACE=1 during the KL run (4 x 512-token sequences a batch)",
+  "without_chains": {
+   "host_passes": 576,
+   "pass_ms": 801.4,
+   "decode_cpu_ms": 6931.6,
+   "encode_cpu_ms": 7676.8,
+   "waiting_on_npu_ms": 2145.7,
+   "in_pieces_ms": 3664.9
+  },
+  "with_chains": {
+   "host_passes": 520,
+   "pass_ms": 651.1,
+   "decode_cpu_ms": 4866.6,
+   "encode_cpu_ms": 5822.4,
+   "waiting_on_npu_ms": 2293.8,
+   "in_pieces_ms": 3664.0
+  },
+  "reading": "the passes shrink but the time in pieces does not: the host now waits on the NPU for what it used to spend packing"
+ },
+ "correctness": {
+  "method": "perplexity tool, -c 512 -b 2048 -ub 2048 --chunks 8, against the GPU's logits, as in halo-npu-qgemm-2026-11-18.json",
+  "before": {
+   "mean_kld": 0.003445,
+   "max_kld": 0.251934,
+   "same_top_pct": 96.275
+  },
+  "by_column_with_chains": {
+   "mean_kld": 0.003445,
+   "max_kld": 0.251934,
+   "same_top_pct": 96.275
+  },
+  "by_column_without_chains": {
+   "mean_kld": 0.003445,
+   "max_kld": 0.251934
+  },
+  "quant_rebuilt_kernel": {
+   "mean_kld": 0.004153,
+   "max_kld": 0.274636,
+   "same_top_pct": 95.931
+  },
+  "row_split_50": {
+   "mean_kld": 0.003186,
+   "max_kld": 0.04574,
+   "same_top_pct": 96.716,
+   "note": "only 14 of about 127 pieces per 196 multiplies were split in this run (its batches are four sequences); the bench's single prompt split 72"
+  },
+  "kernel_level": "output mode 3 equals the host's packing of mode 2 byte for byte at 1024x512x2048 and 1024x5120x34816; the two calls as one runlist equal the down call on host-packed activations; a block through the backend gives the same checksum with chains, without, and under the quantized kernel",
+  "greedy_24_tokens_after_9000_characters": "GPU, zest and zest with the split wrote the same text except the digits of an arXiv number the model invents at that point (2603.01496, 2603.00264, 2603.01494): a place where the 96% same-top-token rate decides, so this prompt is not a pass/fail check"
+ },
+ "findings": [
+  "The by-column kernel is at least as fast as the one before on every shape timed (1-4% faster under this load), with the same answers bit for bit.",
+  "A memtile DMA channel that is waiting for its lock has already loaded its next buffer descriptor: a length written to the descriptor then applies only from the one after. Resetting the channel and starting it again at its first descriptor makes it reload.",
+  "Chains remove a tenth of the host passes and a quarter to a third of the pass workers' time, but prefill moved only from 190.8 to 196.2 tokens/s (kernel change included): inside the pieces the NPU's own time is now what the host waits on.",
+  "With the GPU to itself: 300.0 tokens/s at 2,048 tokens before, 305.6 with the by-column kernel and chains, 323.8 with resident activations as well (+8%), against 346.0 for the GPU alone.",
+  "The row split (GGML_XDNA_SPLIT, off by default) passes its tests and moves the answers toward the GPU's. With every piece shared (2026-11-19) a 50% split gives 431.5 tokens/s at 2,048 tokens against 343.6 for the GPU alone and 322.5 for zest without it, and 469.1 with all 64 layers on the NPU. The evening before, sharing two thirds of the pieces, it gave 353.8 (359.4): views that only follow a piece's last op had kept the largest pieces whole. With a second job generating tokens on the GPU throughout it still leads: 290.7 against 237.0 for the GPU alone and 199.7 for zest without it (the evening's 229 against 196-260, where it seemed to lose, was the build that left the largest pieces whole, in different windows).",
+  "Keeping each column's row block of A in its memtile for the call (K up to 5,440) makes those calls 15-18% faster on a quiet machine (26.5-27 TFLOPS) and takes DRAM out of their way: a resident gate/up call moves 427 MB instead of 822. What holds them then is each core's own 32-bit streams (B's 9,216-byte tile per K chunk)."
+ ]
+}
