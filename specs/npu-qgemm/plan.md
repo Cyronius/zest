@@ -844,6 +844,12 @@ by default). `docs/results/halo-page-2026-11-19.json` has every round.
   the per-round files of that day's runs were in /tmp and went with a
   restart; the results file says which figures were recorded from
   summaries.
+- Measured once more on the committed build, every row, 2026-11-21
+  (`docs/results/halo-page-2026-11-21.json`, which the page's tables now
+  come from): within 2% of the figures above everywhere, with the 27B at
+  492 tokens/s by default (1.43–1.44x) and the two smaller LFM2.5 models
+  gaining with the split off too (1.10–1.14x). Accuracy came out the same
+  to the last digit.
 - The narrow-model warning ("the GPU alone was faster than the NPU on every
   model this size we tested") no longer holds here: LFM2.5-350M, width
   1,024, gains 1.27x. It was measured on Strix Point before the split.

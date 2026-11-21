@@ -253,31 +253,31 @@ its own GPU column, not across tables.
 
 ### Strix Halo
 
-Ryzen AI MAX+ 395 with Radeon 8060S, 128 GB, Arch Linux, measured 2026-11-19
-and 2026-11-20 with the machine to itself. Tokens a second, and in brackets
-the slowest and fastest round's speed against the GPU alone. "Split off" is
-the same build with `GGML_XDNA_SPLIT=0`: the NPU takes whole pieces and the
-GPU waits its turn.
+Ryzen AI MAX+ 395 with Radeon 8060S, 128 GB, Arch Linux, measured 2026-11-21.
+Tokens a second, and in brackets the slowest and fastest round's speed
+against the GPU alone. "Split off" is the same build with
+`GGML_XDNA_SPLIT=0`: the NPU takes whole pieces and the GPU waits its turn.
 
 | model | quant | GPU alone | with the add-on | split off | rounds |
 |---|---|---|---|---|---|
-| LFM2.5 2.6B | Q8_0 | 2,980 | **4,636** (1.55–1.56x) | (1.10–1.11x) | 9 |
-| LFM2.5 1.2B | Q8_0 | 6,478 | **9,880** (1.30–1.54x) | | 9 |
-| Qwen3.8-27B | Q4_K_M | 343 | **494** (1.44–1.44x) | 338 (0.98–0.99x) | 5 |
-| Qwen3-4B | Q4_K_M | 1,861 | **2,589** (1.39–1.39x) | | 5 |
-| Qwen3.8-27B | UD-IQ3_S | 354 | **488** (1.38–1.38x) | 339 (0.96–0.97x) | 5 |
-| Qwen3.5-9B | Q4_K_M | 1,080 | **1,412** (1.31–1.31x) | 1,042 (0.96–0.98x) | 5 |
-| Qwen3.8-27B, 20 GB limit (`--memory-gb 20`) | Q4_K_M | 343 | **449** (1.30–1.31x) | 340 (0.99–0.99x) | 5 |
-| LFM2.5-350M | Q8_0 | 18,772 | **23,835** (1.26–1.28x) | | 9 |
-| Qwen3.5-2B | Q4_K_M | 3,455 | **4,292** (1.24–1.25x) | 3,299 (0.94–0.96x) | 9 |
-| Qwen3-Coder-30B-A3B (mixture of experts) | Q4_K_M | 1,715 | 1,647 (0.96–0.96x) | 1,442 (0.84–0.84x) | 5 |
-| Qwen3.6 35B-A3B (mixture of experts) | UD-Q4_K_XL | 1,356 | 1,287 (0.95–0.96x) | 1,098 (0.81–0.81x) | 5 |
+| LFM2.5 2.6B | Q8_0 | 2,983 | **4,647** (1.55–1.56x) | 3,295 (1.10–1.13x) | 9 |
+| LFM2.5 1.2B | Q8_0 | 6,514 | **9,958** (1.49–1.55x) | 7,279 (1.11–1.14x) | 9 |
+| Qwen3.8-27B | Q4_K_M | 343 | **492** (1.43–1.44x) | 339 (0.99–0.99x) | 5 |
+| Qwen3-4B | Q4_K_M | 1,859 | **2,593** (1.39–1.40x) | 1,875 (1.00–1.03x) | 5 |
+| Qwen3.8-27B | UD-IQ3_S | 352 | **487** (1.38–1.38x) | 339 (0.97–0.97x) | 5 |
+| Qwen3.5-9B | Q4_K_M | 1,080 | **1,416** (1.29–1.31x) | 1,045 (0.96–0.97x) | 5 |
+| Qwen3.8-27B, 20 GB limit (`--memory-gb 20`) | Q4_K_M | 342 | **449** (1.27–1.32x) | 340 (0.99–1.00x) | 5 |
+| LFM2.5-350M | Q8_0 | 18,602 | **23,430** (1.24–1.28x) | 16,579 (0.88–0.90x) | 9 |
+| Qwen3.5-2B | Q4_K_M | 3,482 | **4,363** (1.25–1.26x) | 3,349 (0.96–0.97x) | 9 |
+| Qwen3-Coder-30B-A3B (mixture of experts) | Q4_K_M | 1,713 | 1,651 (0.96–0.97x) | 1,443 (0.84–0.84x) | 5 |
+| Qwen3.6 35B-A3B (mixture of experts) | UD-Q4_K_XL | 1,352 | 1,286 (0.88–0.96x) | 1,096 (0.81–0.82x) | 5 |
 
 - **The gain is both devices multiplying at once.** The NPU takes half the
   rows of each prompt piece and the GPU the other half at the same time (see
   [How it works](#how-it-works)). This GPU is about as fast as the NPU at
   these multiplies, so with the split off, taking turns gains nothing on
-  most models. LFM2.5 2.6B is the one measured that gains either way.
+  most models. The LFM2.5 models of 1.2B and 2.6B are the ones measured that
+  gain either way.
 - **On Linux every layer of the big model is on the NPU.** Windows' default
   limit of 20 GB for the NPU's weight copies holds 52 of Qwen3.8-27B's 64
   layers; Linux has no such limit (see "The NPU holds only so much" under
@@ -287,9 +287,10 @@ GPU waits its turn.
   the expert step, which is nearly half of such a model's prompt work, so it
   gets only the attention and router weights.
 - **Keep the processor free.** The add-on's own work between the NPU's
-  multiplies runs on the CPU. With other jobs loading the processor,
-  Qwen3.8-27B (20 GB limit) fell from 449 tokens/s to between 338 and 429,
-  while the GPU alone stayed at 344.
+  multiplies runs on the CPU. A first run of Qwen3.5-9B with one other
+  process using a full core read at 1.16–1.17x instead of 1.29–1.31x, and
+  one of Qwen3.6 35B-A3B with a 23-core job running at 0.67–0.81x. Neither
+  is in the table.
 
 ### Strix Point
 
@@ -364,9 +365,10 @@ was logged every five seconds throughout; note that such a log counts the
 benchmark's own work, so the steadiness of the rounds within a model is the
 better evidence that nothing else interfered. Compare only paired, repeated
 runs like these: on this machine a single run proves little. The Strix Halo
-figures were measured the same way, one model at a time with everything else
-on the machine held back for the run; every round's figures are in
-[halo-page-2026-11-19.json](results/halo-page-2026-11-19.json).
+figures were measured the same way (`bench.py`), one model at a time with
+the GPU and the NPU reserved and a record kept of any other process using
+more than half a core; every round's figures and that record are in
+[halo-page-2026-11-21.json](results/halo-page-2026-11-21.json).
 
 **To measure your own models:** `bench.ps1` runs the same paired
 measurement and prints a row of this table for each model you give it. It's
@@ -488,7 +490,7 @@ The same holds with llama-server's parallel slots, cached conversations,
 contexts of 32,768 tokens, and two models served at once by its router.
 
 The table above is from Strix Point with an earlier build. On Strix Halo with
-the current one (2026-11-19 and 2026-11-20, `bench.py --kl` over eight 512-token pieces of
+the current one (2026-11-21, by `bench.py --kl`'s method over eight 512-token pieces of
 this repository's README and spec):
 
 | model | mean KL divergence | same top token |
@@ -513,7 +515,8 @@ this repository's README and spec):
   also where llama.cpp's own CPU and GPU results differ most from each other
   (0.80 there, under 0.1 nearly everywhere else): at such a token the model
   amplifies any rounding, and 8-bit blocks round more than the GPU does.
-  Without it the mean is 0.0035.
+  Without it the mean is 0.0035
+  ([the comparison](results/halo-page-2026-11-19.json), `qwen3_4b_one_token`).
 - **Both mixture-of-experts models stayed under 0.01 here.** They are not
   the two measured on Strix Point, which were over it.
 

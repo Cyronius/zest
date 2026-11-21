@@ -1254,10 +1254,5 @@
    "npu_failures": 0
   }
  },
- "page_rows": {
-  "Qwen3.8-27B Q4_K_M": "the 'speed' row 'every layer on the NPU' (the 2026-11-19 build with the limit set to 30 GB: the same 64 layers the 2026-11-20 build takes by default), 343 -> 494 tokens/s, 1.44-1.44x; the 2026-11-20 build's own run gave 1.43-1.45x",
-  "Qwen3.8-27B UD-IQ3_S": "build_2026_11_20, the rerun: 354 -> 488 tokens/s, 1.38-1.38x",
-  "Qwen3.8-27B Q4_K_M, 20 GB limit": "the 'speed' row Qwen3.8-27B Q4_K_M: 343 -> 449 tokens/s, 1.30-1.31x; the 2026-11-20 build gave 1.30-1.32x",
-  "every other row": "the 'speed' section (the 2026-11-19 build). The 2026-11-20 build changes nothing for these models: their weight copies are under 20 GB, their accuracy figures are the same to the last digit on both builds, and LFM2.5-2.6B measured on both gave 2,980 and 2,988 tokens/s on the GPU alone and 1.55-1.56x and 1.55-1.57x."
- }
+ "page_rows": "The page's tables come from docs/results/halo-page-2026-11-21.json, where every row was measured on the committed build. This file is the record of the two earlier builds' runs, the Qwen3-4B one-token diagnosis and the NPU memory test."
 }
