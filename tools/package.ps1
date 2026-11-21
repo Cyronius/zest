@@ -58,6 +58,7 @@ Copy-Item (Join-Path $Root "kernels\bfp16_gemm\prebuilt\bfp16_gemm.xclbin") $sta
 Copy-Item (Join-Path $Root "kernels\bfp16_gemm\prebuilt\bfpq_gemm.xclbin") $stage
 # the README's measurements, for anyone to rerun; it finds zest.exe next to it
 Copy-Item (Join-Path $Root "tools\bench.ps1") $stage
+Copy-Item (Join-Path $Root "tools\bench.py") $stage
 Copy-Item (Join-Path $Root "Start-Lemonade.cmd") $stage
 New-Item -ItemType Directory -Force -Path "$stage\tools", "$stage\docs", "$stage\tests\prompts" | Out-Null
 foreach ($f in "start-lemonade.ps1", "bench-lemonade.ps1", "check-lemonade.py") {

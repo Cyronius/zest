@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""bench.ps1's measurement for machines without PowerShell: how much faster llama.cpp reads a prompt with the NPU
+r"""bench.ps1's measurement in Python 3 (Linux or Windows): how much faster llama.cpp reads a prompt with the NPU
 add-on than on the GPU alone, and optionally how far its answers drift, for one or more models.
 
     tools/bench.py ~/models/Qwen3-4B-Q4_K_M.gguf
     tools/bench.py --rounds 9 --kl --text docs.txt a.gguf b.gguf
+    python tools\bench.py --no-split C:\models\Qwen3-4B-Q4_K_M.gguf
 
 Each round is one llama-bench process that tests both the GPU alone and the GPU with the add-on, so the model loads
 once and the two measurements sit next to each other in time. A round's ratio compares that pair; the table gives
@@ -36,10 +37,11 @@ ap.add_argument("--out", help="also write every round's figures to this JSON fil
 a = ap.parse_args()
 
 # next to this script (the release package), else the repo's build of llama.cpp
-llama_dir = a.llama_dir or (HERE if os.path.exists(os.path.join(HERE, "zest")) else os.path.join(HERE, "..", "third_party", "llama-b10944"))
-zest = os.path.join(llama_dir, "zest")
+ZEST = "zest.exe" if os.name == "nt" else "zest"
+llama_dir = a.llama_dir or (HERE if os.path.exists(os.path.join(HERE, ZEST)) else os.path.join(HERE, "..", "third_party", "llama-b10944"))
+zest = os.path.join(llama_dir, ZEST)
 if not os.path.exists(zest):
-    sys.exit(f"no zest in {llama_dir}; pass --llama-dir")
+    sys.exit(f"no {ZEST} in {llama_dir}; pass --llama-dir")
 if a.kl and not a.text:
     sys.exit(f"--kl needs --text, a plain-text file of at least {a.chunks * 512} tokens")
 for m in a.models:

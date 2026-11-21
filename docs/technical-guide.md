@@ -379,8 +379,9 @@ powershell -ExecutionPolicy Bypass -File bench.ps1 -Model C:\models\Qwen3-4B-Q4_
 `-Rounds 9` for models under about 3B. `-Kl -Text <a long text file>` also
 measures how far the answers drift from the GPU's, as in the Accuracy table.
 
-On Linux, `bench.py` is the same measurement in Python 3 (`bench.ps1` also
-runs under PowerShell 7, `pwsh bench.ps1 -Model ...`):
+`bench.py` is the same measurement in Python 3, for Linux (where `bench.ps1`
+also runs under PowerShell 7, `pwsh bench.ps1 -Model ...`) and for Windows
+(`python bench.py ...`):
 
 ```
 ./bench.py ~/models/Qwen3-4B-Q4_K_M.gguf
