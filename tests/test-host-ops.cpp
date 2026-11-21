@@ -1,5 +1,7 @@
 // The host's small steps between the NPU's matmuls, against ggml's CPU backend; host-only mode runs them, no NPU needed.
-// Traces: XDNA-HOST-OPS
+// With the NPU on, a graph with no multiply in it is the GPU's (XDNA-BARE-PIECE): the same cases then check that
+// hand-over, against the same CPU results, at the accuracy the GPU's own ops have.
+// Traces: XDNA-HOST-OPS, XDNA-BARE-PIECE
 
 #include "ggml.h"
 #include "ggml-alloc.h"
@@ -8,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <random>
@@ -78,6 +81,10 @@ int main() {
     const int64_t D = 256, T = 8, HD = 64, H = 4;
     const double exact = 1e-5;
     const double gelu_table = 3e-3;  // ggml-cpu's GELUs read a 16-bit table; the GPU's and ours compute them
+    // Rotary angles at positions in the thousands: ours match the CPU's, the GPU's float32 sines and cosines differ
+    // from them by about 1e-4 (as they do when the GPU runs a model alone).
+    const char * host_only = getenv("GGML_XDNA_HOST_ONLY");
+    const double rope_tol = host_only && *host_only ? exact : 3e-4;
     using in_t = std::vector<ggml_tensor *>;
     const auto rope = [&](int n_dims, int mode, int n_ctx_orig, float freq_scale, float ext_factor, bool factors) {
         return [=](ggml_context * ctx, in_t & in) {
@@ -143,13 +150,13 @@ int main() {
           [&](ggml_context * ctx, in_t & in) { return ggml_geglu(ctx, input(ctx, in, GGML_TYPE_F32, 2 * D, T)); } },
         { "geglu_erf, one tensor", exact,
           [&](ggml_context * ctx, in_t & in) { return ggml_geglu_erf(ctx, input(ctx, in, GGML_TYPE_F32, 2 * D, T)); } },
-        { "rope, normal", exact, rope(HD, GGML_ROPE_TYPE_NORMAL, 0, 1.0f, 0.0f, false) },
-        { "rope, neox", exact, rope(HD, GGML_ROPE_TYPE_NEOX, 0, 1.0f, 0.0f, false) },
-        { "rope, normal, half the head", exact, rope(HD / 2, GGML_ROPE_TYPE_NORMAL, 0, 1.0f, 0.0f, false) },
-        { "rope, neox, three quarters", exact, rope(HD * 3 / 4, GGML_ROPE_TYPE_NEOX, 0, 1.0f, 0.0f, false) },
-        { "rope, neox, yarn", exact, rope(HD, GGML_ROPE_TYPE_NEOX, 4096, 0.25f, 1.0f, false) },
-        { "rope, neox, frequency factors", exact, rope(HD, GGML_ROPE_TYPE_NEOX, 4096, 1.0f, 0.0f, true) },
-        { "rope, normal, yarn and factors", exact, rope(HD, GGML_ROPE_TYPE_NORMAL, 4096, 0.25f, 1.0f, true) },
+        { "rope, normal", rope_tol, rope(HD, GGML_ROPE_TYPE_NORMAL, 0, 1.0f, 0.0f, false) },
+        { "rope, neox", rope_tol, rope(HD, GGML_ROPE_TYPE_NEOX, 0, 1.0f, 0.0f, false) },
+        { "rope, normal, half the head", rope_tol, rope(HD / 2, GGML_ROPE_TYPE_NORMAL, 0, 1.0f, 0.0f, false) },
+        { "rope, neox, three quarters", rope_tol, rope(HD * 3 / 4, GGML_ROPE_TYPE_NEOX, 0, 1.0f, 0.0f, false) },
+        { "rope, neox, yarn", rope_tol, rope(HD, GGML_ROPE_TYPE_NEOX, 4096, 0.25f, 1.0f, false) },
+        { "rope, neox, frequency factors", rope_tol, rope(HD, GGML_ROPE_TYPE_NEOX, 4096, 1.0f, 0.0f, true) },
+        { "rope, normal, yarn and factors", rope_tol, rope(HD, GGML_ROPE_TYPE_NORMAL, 4096, 0.25f, 1.0f, true) },
     };
 
     int failures = 0;

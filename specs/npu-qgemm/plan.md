@@ -523,7 +523,8 @@ waiting. With the GPU to itself later that evening (controls matching the
 morning's quiet figures): 300.0 before, 305.6 with the new kernel and
 chains (`docs/results/halo-npu-chain-2026-11-18.json` has both sittings).
 
-**The row split (experiment, `GGML_XDNA_SPLIT`, off by default).** Taking
+**The row split (`GGML_XDNA_SPLIT`; the default at 50% since 2026-11-19,
+an off-by-default experiment when this was written).** Taking
 turns, the two devices cannot beat the faster of them by much: the NPU and
 the GPU tie on the multiplies, so the pieces the NPU takes cost what the GPU
 would have spent on them plus the host's work. The split gives the NPU a
@@ -625,8 +626,8 @@ shared and no NPU failure in each:
 | Qwen3-Coder-30B-A3B Q4_K_M (mixture of experts) | 1,718 | 1,048 | 1,370 | 0.0045 | 0.0035 |
 
 The dense models go from behind the GPU alone to 1.17x and 1.24x of it.
-The mixture-of-experts model stays behind it (0.80x, from 0.61x); why is
-not traced yet.
+The mixture-of-experts model stays behind it (0.80x, from 0.61x); the next
+section has why.
 
 The quantized-weight kernel (`GGML_XDNA_WEIGHTS=quant`, all 64 layers in
 16 GB of copies) gains from the split too, but stays behind (04:19, 2,048
@@ -708,6 +709,96 @@ these calls now run. Prefill at 2,048 tokens: 305.6 to 323.8 tokens/s.
   with a lock already taken.
 - *The down multiply* (a quarter of the FLOPs) cannot be resident at
   K = 17,408; its traffic is A and B in equal parts.
+
+### Mixture-of-experts models, and how results get to the GPU (2026-11-19)
+
+On Qwen3-Coder-30B-A3B (width 2,048, 128 experts of 768, 8 a token) zest
+read a prompt at 0.63x the GPU alone, and on Qwen3.6-35B-A3B at 0.51x.
+Vulkan's own per-op timer (`GGML_VK_PERF_LOGGER=1`) says where the GPU
+alone spends a 2,048-token prompt on the 30B:
+
+| | ms | share |
+|---|---|---|
+| expert multiplies (`MUL_MAT_ID`) | 561 | 47% |
+| attention | 209 | 17% |
+| attention projections and the router, which zest takes | 232 | 19% |
+| everything else | 195 | 16% |
+
+So the NPU has a fifth of the work to take. But more than half of what zest
+lost was not its own time: **the GPU's expert gate and up multiplies took
+8.4 ms each under zest against 3.8 ms alone**, 430 ms a prompt. They are the
+first ops to read the normed activations that zest's second piece of each
+layer writes. What it was not: the GPU's clock (sampled at 2 kHz, it only
+follows how busy the GPU is), the host's threads (7.97 ms with two), the
+router multiply (8.37 ms without it). What it was: the copy. zest wrote its
+results with `ggml_backend_tensor_set`, a `memcpy` into Vulkan's mapped
+memory, and glibc's `memcpy` uses ordinary stores under 24 MB on this
+machine and non-temporal stores from there. This model's results are 17 MB
+tensors; the 27B's are 42 MB, which is why it never showed. Three things
+each put those multiplies back at 4.0-4.2 ms: leaving the norm to the GPU,
+lowering glibc's threshold to 1 MB for the process (`GLIBC_TUNABLES`), and
+having the GPU copy the results from the piece's pinned memory
+(`ggml_backend_tensor_set_async`), which is what zest now does
+(XDNA-RESULT-COPY). The GPU's copy is also three times as fast as the
+memcpy: 0.19 s to 0.06 s a prompt on the 30B. Flushing the source from the
+CPU's caches before the GPU's copy gained nothing.
+
+Prefill at 2,048 tokens, one build with a switch between the copies (08:45,
+the GPU and the NPU held; the GPU alone from ten minutes earlier):
+
+| | GPU alone | memcpy | GPU copy | GPU copy, with the split |
+|---|---|---|---|---|
+| Qwen3-Coder-30B-A3B | 1,718 | 1,059 | 1,447 | 1,620 (NPU a quarter of the rows) |
+| Qwen3.6-35B-A3B | 1,364 | 744 | 1,082 | 1,257 (half) |
+| Qwen3.5-9B | 1,079 | 986 | 1,047 | 1,408 (half) |
+| Qwen3.8-27B | 344 | 323 | 341 | 442 (half) |
+
+The 27B without the split is now within 1% of the GPU alone.
+
+The build that keeps the GPU copy (09:27-09:45, each model's figures within
+two minutes of each other):
+
+| | GPU alone | zest | NPU a quarter of the rows | half |
+|---|---|---|---|---|
+| Qwen3-Coder-30B-A3B | 1,712 | 1,446 | 1,631 | 1,645 |
+| Qwen3.6-35B-A3B | 980-987 | 903 | 1,028 | 1,030 |
+| Qwen3.5-9B | 907 | 871 | 976 | 1,120 |
+| Qwen3.5-2B | 3,440 | 3,310 | 3,750 | 4,317 |
+| Qwen3.8-27B | 344 | 340 | 381 | 449 |
+
+On the 35B and the 9B the GPU alone itself read 28% and 16% slower from
+09:28 on than at 08:40, and zest with it; the other three models did not
+move. It is not zest (at 10:18 the 9B gave 915, 915 and 919 tokens/s with
+the build before, this one and no zest loaded) and it is not explained, so
+for those two models only one sitting's figures compare. Answers: mean KL
+against the GPU 0.0045 on the 30B (0.0035 with the split), 0.0090 on the 35B
+(0.0060), 0.0041 on the 9B (0.0024), 0.0033 on the 27B (0.0025), no NPU
+failure.
+
+A second, smaller thing: 29 of the 35B's 250 pieces a prompt, and 8 of the
+27B's 218, held no multiply at all. A small op is claimed behind a multiply, llama.cpp's
+scheduler then orders the graph its own way, and an op zest doesn't take
+can fall between the two. Such a piece cost 2.7 ms on the host for a few
+cheap ops; the GPU runs it now, in 0.4 ms (XDNA-BARE-PIECE).
+
+**What is left on these models is structure.** zest's pieces on the 30B
+take 0.44 s a prompt (97 pieces of 4.5 ms: NPU 0.12 s, host passes 0.18,
+reads and writes 0.11) for work the GPU does in 0.24 s. At this width a
+multiply is about a millisecond on either device (the NPU's q projection on
+1,024 rows: 1.12 ms, 15 TFLOPS, against 25 on the 27B's shapes), so the
+kernel's and the host's fixed costs per piece are what is being compared.
+Sharing rows helps (0.96x with the split at 50%), and no more than that:
+with a fifth of the work to share, a free NPU would give 1.1x.
+
+**The expert step on the NPU does not pay with this kernel.** An
+expert-sized call on 512 rows takes 0.40 ms (gate/up fused, 2,048 to 1,536)
+and 0.26 ms (down), so a layer's 16,384 (token, expert) rows cost at least
+21 ms on the NPU against the GPU's 12 ms, and that is if every pass were
+full: the kernel gives all eight columns the same weights, and an expert
+has 128 rows on average, so each would need a pass of its own, or the
+instruction streams a new kind of call with a weight block per column. The
+experts' BFP16 copies would be 33 GB on the 30B.
+`docs/results/halo-moe-2026-11-19.json` has the figures.
 
 ### Phase 3: backend
 

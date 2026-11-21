@@ -294,26 +294,42 @@ set_tests_properties(memory-budget-npu-quant PROPERTIES LABELS npu ENVIRONMENT "
 # under the quantized-weight kernel, which doesn't chain; and on the host.
 add_test(NAME ffn-block-host COMMAND "${GGML_DIST}/test-ffn-block${EXE}")
 set_tests_properties(ffn-block-host PROPERTIES LABELS host ENVIRONMENT "${XDNA_ENV};GGML_XDNA_HOST_ONLY=1")
-add_test(NAME ffn-block-npu COMMAND "${GGML_DIST}/test-ffn-block${EXE}")
-set_tests_properties(ffn-block-npu PROPERTIES LABELS npu ENVIRONMENT "${XDNA_ENV};GGML_XDNA_HOST_ONLY=")
+# (as shipped the GPU runs half the block's rows at the same time, which the trace has to say)
+add_test(NAME ffn-block-npu COMMAND ${CMAKE_COMMAND} "-DEXE=${GGML_DIST}/test-ffn-block${EXE}"
+    "-DRUN_ENV=${XDNA_ENV};GGML_XDNA_HOST_ONLY=;GGML_XDNA_TRACE=1;GGML_XDNA_TRACE_EVERY=1"
+    "-DEXPECT=1 pieces shared with the GPU" -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/expect-output.cmake")
+set_tests_properties(ffn-block-npu PROPERTIES LABELS npu)
+# the whole block on the NPU, the GPU waiting its turn
+add_test(NAME ffn-block-npu-whole COMMAND "${GGML_DIST}/test-ffn-block${EXE}")
+set_tests_properties(ffn-block-npu-whole PROPERTIES LABELS npu ENVIRONMENT "${XDNA_ENV};GGML_XDNA_HOST_ONLY=;GGML_XDNA_SPLIT=0")
 add_test(NAME ffn-block-npu-quant COMMAND "${GGML_DIST}/test-ffn-block${EXE}")
 set_tests_properties(ffn-block-npu-quant PROPERTIES LABELS npu ENVIRONMENT "${XDNA_ENV};GGML_XDNA_HOST_ONLY=;GGML_XDNA_WEIGHTS=quant")
-# the experimental row split: the GPU runs half the block's rows at the same
-# time; and with every NPU submission failing, the GPU finishes the NPU's rows
+# with the piece's memory not pinned: Vulkan then stages the copies of its inputs and results itself
+add_test(NAME ffn-block-npu-unpinned COMMAND "${GGML_DIST}/test-ffn-block${EXE}")
+set_tests_properties(ffn-block-npu-unpinned PROPERTIES LABELS npu ENVIRONMENT "${XDNA_ENV};GGML_XDNA_HOST_ONLY=;GGML_XDNA_PINNED=0")
+# the row split at another share (the NPU a quarter of the rows); and with
+# every NPU submission failing, where the GPU finishes the NPU's rows
 add_test(NAME ffn-block-npu-split COMMAND ${CMAKE_COMMAND} "-DEXE=${GGML_DIST}/test-ffn-block${EXE}"
-    "-DRUN_ENV=${XDNA_ENV};GGML_XDNA_HOST_ONLY=;GGML_XDNA_SPLIT=50;GGML_XDNA_TRACE=1;GGML_XDNA_TRACE_EVERY=1"
+    "-DRUN_ENV=${XDNA_ENV};GGML_XDNA_HOST_ONLY=;GGML_XDNA_SPLIT=25;GGML_XDNA_TRACE=1;GGML_XDNA_TRACE_EVERY=1"
     "-DEXPECT=1 pieces shared with the GPU" -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/expect-output.cmake")
 set_tests_properties(ffn-block-npu-split PROPERTIES LABELS npu)
 add_test(NAME ffn-block-npu-split-fail COMMAND "${GGML_DIST}/test-ffn-block${EXE}")
 set_tests_properties(ffn-block-npu-split-fail PROPERTIES LABELS npu
-    ENVIRONMENT "${XDNA_ENV};GGML_XDNA_HOST_ONLY=;GGML_XDNA_SPLIT=50;GGML_XDNA_FAIL_AFTER=0")
+    ENVIRONMENT "${XDNA_ENV};GGML_XDNA_HOST_ONLY=;GGML_XDNA_FAIL_AFTER=0")
+# (the whole block's rows through the chain: the split is off for this one)
 add_test(NAME ffn-chain-same-bits COMMAND ${CMAKE_COMMAND} "-DEXE=${GGML_DIST}/test-ffn-block${EXE}"
-    "-DENV_BOTH=${XDNA_ENV};GGML_XDNA_HOST_ONLY=" "-DENV_A=GGML_XDNA_CHAIN=1" "-DENV_B=GGML_XDNA_CHAIN=0"
+    "-DENV_BOTH=${XDNA_ENV};GGML_XDNA_HOST_ONLY=;GGML_XDNA_SPLIT=0" "-DENV_A=GGML_XDNA_CHAIN=1" "-DENV_B=GGML_XDNA_CHAIN=0"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/same-checksum.cmake")
 set_tests_properties(ffn-chain-same-bits PROPERTIES LABELS npu)
 # the host's small steps between NPU matmuls, against ggml's CPU backend
 add_test(NAME host-ops-host COMMAND "${GGML_DIST}/test-host-ops${EXE}")
 set_tests_properties(host-ops-host PROPERTIES LABELS host ENVIRONMENT "${XDNA_ENV};GGML_XDNA_HOST_ONLY=1")
+# the same graphs with the NPU on: a piece with no multiply in it goes to the
+# GPU, which the trace has to say, and gives ggml's answers
+add_test(NAME bare-piece-npu COMMAND ${CMAKE_COMMAND} "-DEXE=${GGML_DIST}/test-host-ops${EXE}"
+    "-DRUN_ENV=${XDNA_ENV};GGML_XDNA_HOST_ONLY=;GGML_XDNA_TRACE=1;GGML_XDNA_TRACE_EVERY=1"
+    "-DEXPECT=pieces with no multiply, run by the GPU" -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/expect-output.cmake")
+set_tests_properties(bare-piece-npu PROPERTIES LABELS npu)
 set_tests_properties(insts-gen bfp16-pack qtile-pack PROPERTIES LABELS host)
 set_tests_properties(safe-start PROPERTIES LABELS host ENVIRONMENT "${XDNA_ENV}")
 set_tests_properties(safe-start-no-driver PROPERTIES LABELS nodriver ENVIRONMENT "${XDNA_ENV}")

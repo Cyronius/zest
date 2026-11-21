@@ -575,9 +575,14 @@ void usage() {
         "  --memory-gb N   the most memory the NPU's copies of the weights may take, in GB\n"
         "                  (0.5 and the like work; 0 keeps the NPU out). Default: the\n"
         "                  memory free once the model is loaded, less 4 GB or a tenth of\n"
+#ifdef _WIN32
         "                  the machine's memory, whichever is larger, and at most 20 GB:\n"
         "                  past about 26 GB the NPU's copies can go bad. Layers that\n"
         "                  don't fit stay on the GPU.\n"
+#else
+        "                  the machine's memory, whichever is larger. Layers that don't\n"
+        "                  fit stay on the GPU.\n"
+#endif
         "  --min-chunk N   the smallest piece of a prompt, in tokens, the NPU takes.\n"
         "                  Default 1024; smaller pieces go to the GPU, which read them\n"
         "                  faster in our tests. 512 also uses the NPU with llama.cpp's\n"

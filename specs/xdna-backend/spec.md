@@ -92,8 +92,9 @@ listed first in `-dev`, we can read its buffers, and llama.cpp gives a device
 with no free memory no layers. Tensors in Vulkan buffers have no CPU pointer,
 so the backend reads them with `ggml_backend_tensor_get_async` (the GPU
 copies into host memory; the plain `ggml_backend_tensor_get` reads uncached
-memory at 0.2 GB/s on this machine) and writes them with
-`ggml_backend_tensor_set`.
+memory at 0.2 GB/s on this machine) and writes its results with
+`ggml_backend_tensor_set_async` from the pinned memory a piece works in, so
+the GPU does that copy as well (XDNA-RESULT-COPY).
 
 It shall also accept host buffer types in `supports_buft`, and read tensors
 in host memory directly. That is a correctness requirement, not a
@@ -286,9 +287,9 @@ asked with no context alive shall not count. Host-only mode
 
 The limit is the memory available when the first weight is asked about,
 less what's kept back for llama.cpp's work buffers and the rest of the
-machine: the larger of 4 GB and a tenth of the machine's memory, and at most
-20 GiB. `GGML_XDNA_MAX_COPY_GB` (in GiB, fractions allowed) sets it instead,
-with no cap.
+machine: the larger of 4 GB and a tenth of the machine's memory, and on
+Windows at most 20 GiB. `GGML_XDNA_MAX_COPY_GB` (in GiB, fractions allowed)
+sets it instead, with no cap.
 
 On Linux, "available" is `/proc/meminfo`'s `MemAvailable` (free memory plus
 what the page cache gives up), and inside a container no more than its own
@@ -301,7 +302,7 @@ Without a limit, a big model's copies pass the machine's memory and Windows
 starts paging, which looks like the add-on being slow, not like a memory
 problem.
 
-Why at most 20 GiB (added 2026-10-04): the NPU holds only so much. On the
+Why at most 20 GiB on Windows (added 2026-10-04): the NPU holds only so much. On the
 88 GB test machine its memory in use flattens at about 25.9 GiB, and copies
 past that come back damaged, silently: Qwen3.8-27B with all 64 layers on
 the NPU (27 GB of copies) answered `////`, and with copies capped at 12, 16,
@@ -314,6 +315,18 @@ read as 100% NaN on the NPU, with no error from the driver, while the CPU
 still sees their bytes intact. The 20 GiB cap leaves room for the add-on's
 other NPU buffers and for other programs using the NPU. Why the ceiling is
 where it is isn't known; XDNA-NPU-RESULT-CHECK catches it when it's passed.
+
+On Strix Halo under Linux the same repro finds no ceiling (2026-11-20,
+Ryzen AI MAX+ 395, 128 GB, kernel 7.2.15, xrt 2.21.75: 16 to 40 GiB in
+2 GiB steps and 40 to 64 GiB in 4 GiB steps, every buffer right at every
+step), and Qwen3.8-27B Q4_K_M with
+all 64 layers on the NPU (25.8 GB of copies under a 30 GB limit) answers
+right (mean KL 0.0031 against the GPU) and reads 1.44x the GPU alone,
+against 1.31x with the default limit's 52 layers. So the ceiling belongs to
+Windows or to that machine, not to the NPU as such. Since 2026-11-20 the
+default on Linux has no 20 GiB cap (the owner's decision: "yes lift the cap,
+it has plenty of ram"): the memory rule above is the only limit there, and
+XDNA-NPU-RESULT-CHECK still stands behind it. Windows keeps the cap.
 
 One budget covers the process, since `supports_op` is asked without a
 context. Two contexts alive at once on the same model would each build the
@@ -990,12 +1003,13 @@ fall from 576 to 520.
 
 ---
 
-### XDNA-ROW-SPLIT: The GPU can run part of a piece's rows at the same time (experimental)
+### XDNA-ROW-SPLIT: The GPU runs part of a piece's rows at the same time
 **Applies to:** Zest
 **Test category:** integration
 
-Off by default. With `GGML_XDNA_SPLIT=<percent>` the backend shall give the
-NPU that share of each claimed piece's rows (rounded to whole 512s, at least
+The backend shall give the NPU `GGML_XDNA_SPLIT` percent (default 50; 0
+turns the split off, and the NPU takes whole pieces) of each claimed piece's
+rows (rounded to whole 512s, at least
 512 for each device; pieces under 1,024 rows are not split) and run the
 remaining rows of the same piece on the GPU at the same time: every op in a
 claimed piece works row by row, so the two halves are independent.
@@ -1024,18 +1038,19 @@ The answers move toward the GPU's own: its rows are exactly what the GPU
 alone computes.
 
 **Acceptance criteria** (`tests/test-ffn-block.cpp`, on the NPU):
-- `ffn-block-npu-split`: with `GGML_XDNA_SPLIT=50`, the block's result stays
-  as close to the CPU's as without it, the NPU has not failed, and the trace
-  says the piece was shared (the block ends with a transpose of its result
-  and a reshape of an unrelated tensor, as the 27B's pieces do)
-- `ffn-block-npu-split-fail`: with `GGML_XDNA_FAIL_AFTER=0` as well, the
-  backend reports the failure and the block's result is still close to the
-  CPU's
+- `ffn-block-npu`: with nothing set, the block's result is close to the
+  CPU's, the NPU has not failed, and the trace says the piece was shared
+  (the block ends with a transpose of its result and a reshape of an
+  unrelated tensor, as the 27B's pieces do)
+- `ffn-block-npu-split`: the same with `GGML_XDNA_SPLIT=25`
+- `ffn-block-npu-whole`: with `GGML_XDNA_SPLIT=0` the result is as close,
+  the NPU running every row
+- `ffn-block-npu-split-fail`: with `GGML_XDNA_FAIL_AFTER=0`, the backend
+  reports the failure and the block's result is still close to the CPU's
 
 **Verification (manual, the model):** the KL divergence check and a
-24-token reply after a prompt over 1,024 tokens on Qwen3.8-27B with
-`GGML_XDNA_SPLIT=50`; `GGML_XDNA_TRACE=1` prints how many pieces were
-shared.
+24-token reply after a prompt over 1,024 tokens on Qwen3.8-27B;
+`GGML_XDNA_TRACE=1` prints how many pieces were shared.
 
 **Status 2026-11-19:** passing. With the GPU to itself and every piece
 shared, a 50% split gave 431.5 tokens/s at 2,048 tokens on Qwen3.8-27B
@@ -1044,7 +1059,95 @@ layers on the NPU (`specs/npu-qgemm/plan.md`,
 `docs/results/halo-npu-chain-2026-11-18.json`). With the split the mean KL
 divergence against the GPU was 0.0025 with one 2,048-token prompt per batch
 (0.0034 without it), every piece shared and no NPU failure, and a 24-token
-reply after a 2,887-token prompt was the GPU's. Still off by default.
+reply after a 2,887-token prompt was the GPU's.
+
+**The default since 2026-11-19** (the owner's decision, "i think the split
+should be the default"), after it led on every model measured: at 2,048
+tokens, 1.30x the GPU alone on Qwen3.8-27B (449 against 344 tokens/s; 0.99x
+with the split off), 1.26x on Qwen3.5-2B, 1.23x on Qwen3.5-9B, and on two
+mixture-of-experts models 0.96x and 1.05x, against 0.84x and 0.92x with it
+off (`docs/results/halo-moe-2026-11-19.json`). With a second job on the GPU
+it led as well. Measured on Linux on Strix Halo only so far.
+
+---
+
+### XDNA-RESULT-COPY: A piece's results reach Vulkan's memory by a GPU copy
+**Applies to:** Zest
+**Test category:** integration (the results), manual (the speed)
+
+A piece's results that something outside it reads shall go into Vulkan's
+memory with `ggml_backend_tensor_set_async` on the backend's own Vulkan
+instance, from the pinned host memory the piece computed them in, and the
+backend shall wait for those copies (`ggml_backend_synchronize`) before the
+piece's memory is handed to the next piece and before `graph_compute`
+returns. A result whose tensor lives in host memory is written directly.
+
+Why: ggml's plain write (`ggml_backend_tensor_set`) is a `memcpy` into the
+mapped buffer, and glibc's `memcpy` uses ordinary stores under 24 MB on this
+machine and non-temporal stores from there. After an ordinary-store copy, the
+GPU's next op to read the tensor ran at less than half speed. Found
+2026-11-19 on Qwen3-Coder-30B-A3B (a mixture-of-experts model, width 2,048,
+so its results are 17 MB tensors): each layer's two expert gate/up multiplies,
+which read the normed activations the backend had just written, took 8.4 ms
+each under the backend against 3.8 ms for the GPU alone
+(`GGML_VK_PERF_LOGGER=1`), which was more than half of what the backend lost
+to the GPU on that model. Three things each put them back at 4.1-4.2 ms:
+leaving the norm to the GPU, `GLIBC_TUNABLES` lowering memcpy's non-temporal
+threshold to 1 MB, and having the GPU do the copy, which is the one a backend
+can choose. The GPU's copy is also about three times faster than the memcpy
+(0.19 s to 0.06 s per 2,048-token prompt there). Flushing the source's lines
+from the CPU's caches before the GPU's copy made nothing faster. The 27B's
+results are 42 MB tensors, already copied with non-temporal stores, and it
+gains only the faster copy.
+
+**Acceptance criteria:**
+- the block tests (`ffn-block-npu`, `ffn-block-npu-quant`,
+  `ffn-block-npu-split`, `ffn-block-npu-split-fail`, `ffn-chain-same-bits`)
+  pass: their results come back through this path
+- `ffn-block-npu-unpinned`: with `GGML_XDNA_PINNED=0` (the piece's memory
+  not pinned, so Vulkan stages the copy itself) the block's result is as
+  close to the CPU's
+
+**Verification (manual, the speed):** `GGML_VK_PERF_LOGGER=1` on a
+mixture-of-experts model at 2,048 tokens: the `MUL_MAT_ID` lines under the
+backend are within about 10% of the GPU alone's.
+
+**Passing 2026-11-19:** the block tests pass; the 30B's gate/up multiplies
+take 4.08 ms under the backend (3.82 alone); prefill on it went from 1,059
+to 1,447 tokens/s, on Qwen3.6-35B-A3B from 744 to 1,082, on Qwen3.5-9B from
+986 to 1,047 and on Qwen3.8-27B from 323 to 341
+(`docs/results/halo-moe-2026-11-19.json`). The 30B's and the 9B's KL
+figures against the GPU are unchanged to the last digit.
+
+---
+
+### XDNA-BARE-PIECE: A piece with no multiply in it runs on the GPU
+**Applies to:** Zest
+**Test category:** integration
+
+On the NPU, when `graph_compute` is handed a piece that holds small ops but
+no `MUL_MAT`, and Vulkan supports every op in it, the backend shall run the
+piece on its own Vulkan instance and leave the host out of it. If Vulkan
+lacks an op, or the GPU's run fails, the host runs the piece as before.
+
+Why: a small op is claimed because one of its inputs comes from a multiply
+the backend takes (XDNA-SIZE-POLICY), but llama.cpp's scheduler orders a
+graph's nodes its own way, and an op the backend does not take can fall
+between the two. The small op then arrives as a piece of its own: nothing for
+the NPU, and on the host it costs a read and a write of every tensor it
+touches for a few cheap ops (2.7 ms each, 29 of the 250 pieces a prompt on
+Qwen3.6-35B-A3B and 8 of the 218 on Qwen3.8-27B, 2026-11-19). The GPU has
+the tensors where they are, and takes 0.4 ms.
+`GGML_XDNA_TRACE=1` counts them ("pieces with no multiply, run by the GPU").
+
+**Acceptance criteria:**
+- `bare-piece-npu` (`tests/test-host-ops.cpp` with the NPU on): every small
+  op's graph, which has no multiply, gives the CPU backend's result within
+  its tolerance (3e-4 for the rotary step, which is the GPU's own distance
+  from the CPU at positions in the thousands; the host's is under 1e-5), and
+  the trace says the GPU ran pieces with no multiply
+- `host-ops-host` still passes: host-only mode, which has no GPU pieces, runs
+  the same graphs on the host
 
 ---
 

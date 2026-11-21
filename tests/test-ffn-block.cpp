@@ -3,9 +3,10 @@
 // norm, the gate and up multiplies, their SwiGLU, the down multiply and the
 // residual add, the weights in a weight buffer. The backend fuses gate and up
 // and chains the down multiply behind them (one NPU submission, the SwiGLU
-// never coming to the host); with GGML_XDNA_CHAIN=0 a host pass sits between,
-// and with GGML_XDNA_SPLIT the GPU runs part of the rows at the same time
-// (the split test also looks for the trace line that says the piece was shared).
+// never coming to the host); with GGML_XDNA_CHAIN=0 a host pass sits between.
+// As shipped the GPU runs half the rows at the same time (GGML_XDNA_SPLIT, 0
+// for none; those tests also look for the trace line that says the piece was
+// shared).
 // Whichever way, the result has to stay close to the CPU backend's on the
 // same bytes, and the NPU must not have failed on the way (when it does the
 // GPU finishes the work, with the right answer: GGML_XDNA_FAIL_AFTER tests
