@@ -800,6 +800,84 @@ instruction streams a new kind of call with a weight block per column. The
 experts' BFP16 copies would be 33 GB on the 30B.
 `docs/results/halo-moe-2026-11-19.json` has the figures.
 
+### The page's Strix Halo figures (2026-11-19)
+
+Measured for the project's page by `bench.ps1`'s method (a Python port, now
+`tools/bench.py`: no PowerShell on this machine), each model in a turn of
+its own with the machine reserved, on one build throughout (the row split on
+by default). `docs/results/halo-page-2026-11-19.json` has every round.
+
+| model | GPU alone, tokens/s | as shipped | split off | mean KL as shipped / split off |
+|---|---|---|---|---|
+| LFM2.5-2.6B Q8_0 | 2,980 | 1.56x (1.55–1.56) | | 0.0036 / 0.0066 |
+| LFM2.5-1.2B Q8_0 | 6,478 | 1.52x (1.30–1.54) | | 0.0020 / 0.0041 |
+| Qwen3.8-27B Q4_K_M, 30 GB limit (64 layers) | 343 | 1.44x (1.44–1.44) | 0.99x | 0.0031 / |
+| Qwen3-4B Q4_K_M | 1,861 | 1.39x (1.39–1.39) | | 0.0103 / 0.0134 |
+| Qwen3.5-9B Q4_K_M | 1,080 | 1.31x (1.31–1.31) | 0.97x | 0.0018 / 0.0037 |
+| Qwen3.8-27B Q4_K_M | 343 | 1.31x (1.30–1.31) | 0.99x | 0.0028 / 0.0034 |
+| Qwen3.8-27B UD-IQ3_S | 353 | 1.27x (1.26–1.27) | 0.98x | 0.0035 / 0.0040 |
+| LFM2.5-350M Q8_0 | 18,772 | 1.27x (1.26–1.28) | | 0.0083 / 0.0138 |
+| Qwen3.5-2B Q4_K_M | 3,455 | 1.24x (1.24–1.25) | 0.95x | 0.0014 / 0.0028 |
+| Qwen3-Coder-30B-A3B Q4_K_M | 1,715 | 0.96x (0.96–0.96) | 0.84x | 0.0049 / 0.0059 |
+| Qwen3.6-35B-A3B UD-Q4_K_XL | 1,356 | 0.95x (0.95–0.96) | 0.81x | 0.0072 / 0.0095 |
+
+- Every dense model gains with the split. Without it, of the five measured
+  that way, only LFM2.5-2.6B does (1.10–1.11x, measured 2026-11-20): on
+  this machine the split is nearly all of the gain.
+- All 64 of the 27B's layers on the NPU (25.8 GB of copies against the
+  default 20 GB's 52 layers) give 494 tokens/s, 1.44x. The default limit is
+  what it is because of the damage seen past 26 GiB on Windows
+  (XDNA-MEMORY-BUDGET). That ceiling is not here: `npu-ceiling-repro` ran 16
+  to 64 GiB of NPU buffers with nothing damaged (2026-11-20, 02:10 and
+  05:08). The
+  default limit on Linux has no 20 GB cap since then (the owner's decision);
+  Windows keeps it. On that build (2026-11-20, 27 of 27 tests) the 27B
+  reads 1.44x by default (1.43–1.45, Q4_K_M) and 1.38x (UD-IQ3_S), and
+  1.31x with the limit set back to 20 GB; its mean KL is 0.0031 and 0.0037.
+  The other models' accuracy figures are the same to the last digit on both
+  builds, and LFM2.5-2.6B measured again gave 1.55x.
+- Two things about measuring here. The machine has two schedulers in use
+  (arbiter and the older dibs) and a job under one is invisible to the
+  other: three rows of the 2026-11-20 series ran with another project's
+  job on the GPU and were thrown out (the GPU alone at a third of its
+  speed). A timing now holds both and refuses to start on a busy GPU. And
+  the per-round files of that day's runs were in /tmp and went with a
+  restart; the results file says which figures were recorded from
+  summaries.
+- The narrow-model warning ("the GPU alone was faster than the NPU on every
+  model this size we tested") no longer holds here: LFM2.5-350M, width
+  1,024, gains 1.27x. It was measured on Strix Point before the split.
+- The split's share is fixed at half. Strix Point's GPU is far slower
+  against the same NPU (the published 1.9x on the 27B UD-IQ3_S says a layer
+  on the NPU path takes about 0.4 of the GPU's time), so half the rows on
+  its GPU would take about as long as all of them on the NPU: the right
+  share there is probably nearer three quarters, and differs by model.
+  Not measured yet; if it is so, the share should follow the two devices'
+  measured piece times rather than be a setting.
+
+**One token on Qwen3-4B.** Its mean KL is one token: 14.0 by
+llama-perplexity's count at piece 1, position 449 of the text (the
+repository's README: after `https://cyron`, the third time that address
+appears; next is `ius`), and 0.0035 without it. Each run's logits saved and
+compared token by token over the first four pieces:
+
+| | p(`ius`) | KL there against the GPU |
+|---|---|---|
+| GPU alone, and again | 0.165, 0.165 | 0 |
+| CPU alone | 0.061 | 0.55 |
+| zest as shipped; split off; chain off; quantized-weight kernel; build a87d2ae | 1.000 | 8.26 |
+| zest, the NPU's share on the CPU (`GGML_XDNA_HOST_ONLY=1`) | 0.812 | 1.44 |
+| zest, multiplies only (`GGML_XDNA_BLOCKS=0`) | 0.010 | 1.18 |
+
+(8.26 and not 14.0 because the saved log-probabilities stop 16 below the
+largest logit.) The CPU and the GPU differ most from each other at this
+same token (0.80 against the CPU, the next largest 0.32, then under 0.1),
+so the position is one where the model amplifies whatever rounding it is
+given, and zest's 8-bit blocks are the largest rounding of the three. It is
+not something this session's changes brought, and not the split, the chain
+or the kernel variant. Which side a higher-precision file of the model
+takes was not checked.
+
 ### Phase 3: backend
 
 - `src/xdna-npu.{h,cpp}`:

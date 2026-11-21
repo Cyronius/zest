@@ -29,7 +29,7 @@
       type="font/woff2"
       crossorigin
     />
-    <link rel="stylesheet" href="style.css?v=20261022-3" />
+    <link rel="stylesheet" href="style.css?v=20261120-1" />
     <script src="site.js?v=20261022-2" defer></script>
   </head>
   <body>
@@ -200,6 +200,20 @@
               <tr><th scope="row">LFM2.5-350M<small>Q8_0 · 2,846 prompt tokens</small></th><td>5,338</td><td>5,897</td><td><strong>1.14×</strong><small>1.05–1.15×</small></td></tr>
               </tbody></table></div>
           </div>
+          <div class="model-results"><h3>On Strix Halo, with llama.cpp directly</h3>
+            <p>Ryzen AI MAX+ 395 with Radeon 8060S on Linux. This GPU is about as fast as the NPU at the work Zest moves, so Zest runs both at once: each takes half of every large prompt chunk. Measured from current source, which is newer than the Windows preview. Two mixture-of-experts models we tried came out 4–5% slower; the full table has them.</p>
+            <div class="model-table-scroll" role="region" aria-label="Strix Halo model comparison; scroll horizontally on small screens" tabindex="0"><table>
+              <caption>Prompt processing, tokens/s · one 2,048-token prompt · 5 to 9 paired rounds per model · median speedup with range</caption>
+              <thead><tr><th scope="col">Model / GGUF</th><th scope="col">GPU</th><th scope="col">NPU + GPU</th><th scope="col">Speedup</th></tr></thead><tbody>
+              <tr><th scope="row">LFM2.5-2.6B<small>Q8_0</small></th><td>2,980</td><td>4,636</td><td><strong>1.56×</strong><small>1.55–1.56×</small></td></tr>
+              <tr><th scope="row">LFM2.5-1.2B-Instruct<small>Q8_0</small></th><td>6,478</td><td>9,880</td><td><strong>1.52×</strong><small>1.30–1.54×</small></td></tr>
+              <tr><th scope="row">Qwen3.8-27B<small>Q4_K_M</small></th><td>343</td><td>494</td><td><strong>1.44×</strong><small>1.44–1.44×</small></td></tr>
+              <tr><th scope="row">Qwen3-4B<small>Q4_K_M</small></th><td>1,861</td><td>2,589</td><td><strong>1.39×</strong><small>1.39–1.39×</small></td></tr>
+              <tr><th scope="row">Qwen3.8-27B<small>UD-IQ3_S</small></th><td>354</td><td>488</td><td><strong>1.38×</strong><small>1.38–1.38×</small></td></tr>
+              <tr><th scope="row">LFM2.5-350M<small>Q8_0</small></th><td>18,772</td><td>23,835</td><td><strong>1.27×</strong><small>1.26–1.28×</small></td></tr>
+              </tbody></table></div>
+            <p><a class="text-link" href="https://github.com/Cyronius/zest/blob/main/docs/technical-guide.md#results">Method, all ten models, and accuracy</a></p>
+          </div>
         </div>
       </section>
 
@@ -290,8 +304,9 @@
             </p>
             <p>
               This preview uses the bundled b10944 backend. Speed depends on
-              your model, and converted weights use extra RAM. Linux NPU
-              hardware and Strix Halo haven't been verified by this project.
+              your model, and converted weights use extra RAM. On Strix Halo
+              under Linux we've measured direct llama.cpp use; Lemonade on
+              Linux hasn't been verified by this project.
             </p>
           </div>
         </div>

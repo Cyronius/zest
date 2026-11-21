@@ -6,8 +6,9 @@ These are actual Lemonade API requests, not standalone `llama-bench` results.
 
 **This is Strix Point: Ryzen AI 9 HX PRO 370 / Radeon 890M.** The laptop has
 96 GB of DDR5-5600 installed. Its 890M has 16 compute units; high-end Strix Halo's
-Radeon 8060S has 40. Halo has a substantially larger GPU, but we haven't measured
-Zest on it. A faster GPU baseline could reduce the NPU's relative benefit.
+Radeon 8060S has 40. Halo's figures, measured later with direct llama.cpp and a
+newer build, are in the [technical guide](technical-guide.md#results); don't mix
+them into this table.
 [AMD's GPU specifications](https://rocm.docs.amd.com/en/latest/reference/gpu-specs.html).
 
 ## Recorded side-by-side comparison

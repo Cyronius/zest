@@ -88,11 +88,8 @@ request can take longer while the NPU finishes converting its weight copies.
 
 **Test hardware: Strix Point — Ryzen AI 9 HX PRO 370 / Radeon 890M.**
 This is the smaller laptop GPU, with 16 compute units. High-end Strix Halo's
-Radeon 8060S has 40; it is a much larger GPU platform. On Halo, Zest's NPU
-path is currently slower than the GPU alone (231-255 against 278-300
-tokens/s on Qwen3.8-27B), while NPU engines built differently prefill the
-same model at about 450 tokens/s on the NPU alone. Zest's NPU prefill is being
-reworked to close that gap.
+Radeon 8060S has 40; its results are
+[further down](#what-we-measured-on-strix-halo).
 [AMD hardware specifications](https://rocm.docs.amd.com/en/latest/reference/gpu-specs.html).
 
 | Model / GGUF | Prompt tokens | GPU only (tok/s) | NPU + GPU (tok/s) | Paired speedup (range) | Answer checks, GPU / NPU |
@@ -130,15 +127,42 @@ default GPU backends. Try your own model before assuming it'll be faster.
 
 </details>
 
+## What we measured on Strix Halo
+
+**Test hardware: Strix Halo — Ryzen AI MAX+ 395 / Radeon 8060S, 128 GB, Arch Linux.**
+This is direct llama.cpp b10944, not Lemonade: `llama-bench` reads a
+2,048-token prompt on the GPU alone and then with Zest, in one process.
+
+| Model / GGUF | GPU only (tok/s) | NPU + GPU (tok/s, speedup) |
+|---|---:|---:|
+| LFM2.5-2.6B Q8_0 | 2,980 | **4,636** (1.55–1.56×) |
+| LFM2.5-1.2B-Instruct Q8_0 | 6,478 | **9,880** (1.30–1.54×) |
+| Qwen3.8-27B Q4_K_M | 343 | **494** (1.44–1.44×) |
+| Qwen3-4B Q4_K_M | 1,861 | **2,589** (1.39–1.39×) |
+| Qwen3.8-27B UD-IQ3_S | 354 | **488** (1.38–1.38×) |
+| Qwen3.5-9B Q4_K_M | 1,080 | **1,412** (1.31–1.31×) |
+| LFM2.5-350M Q8_0 | 18,772 | **23,835** (1.26–1.28×) |
+| Qwen3.5-2B Q4_K_M | 3,455 | **4,292** (1.24–1.25×) |
+| Qwen3-Coder-30B-A3B Q4_K_M | 1,715 | 1,647 (0.96–0.96×) |
+| Qwen3.6-35B-A3B UD-Q4_K_XL | 1,356 | 1,287 (0.95–0.96×) |
+
+Five paired rounds per model (nine for the models under 3B), measured 2026-11-19 and 2026-11-20 with the machine to itself. Throughput columns are medians; the speedup is the slowest and fastest round's.
+
+This GPU is about as fast as the NPU at the work Zest moves, so here Zest runs both at once: the NPU takes half the rows of each prompt chunk and the GPU the other half. With that turned off, the same build is no faster than the GPU alone on Qwen3.8-27B (0.96–0.99×). The last two rows are mixture-of-experts models: the NPU can't run their expert step, and they come out slightly slower with Zest than without.
+
+These figures are from the current source, which is newer than the v0.2.0 Windows preview. The Strix Point table above was measured with the preview's build.
+
+[Method, the split-off figures, and accuracy](docs/technical-guide.md#results) · [Raw results](docs/results/halo-page-2026-11-19.json)
+
 ## Before you use the preview
 
 | Item | What we've checked |
 |---|---|
 | Windows 11, Ryzen AI 9 HX PRO 370 / Radeon 890M | Actual Lemonade desktop and API tests |
 | Lemonade / backend | 2026.43.3 / bundled b10944 Vulkan build |
-| Strix Halo, Ryzen AI MAX+ 395 / Radeon 8060S, Linux | Measured: NPU assist currently slower than the GPU alone; being reworked |
+| Strix Halo, Ryzen AI MAX+ 395 / Radeon 8060S, Arch Linux | Direct llama.cpp: every test passes on the NPU; 1.24–1.56× on eight dense models, 0.95–0.96× on two mixture-of-experts models |
 | Other Ryzen AI hardware | Not tested by this project |
-| Linux | Builds and host tests pass; NPU hardware and Lemonade integration remain unverified |
+| Linux | Direct llama.cpp runs on the Strix Halo NPU; Lemonade integration on Linux remains unverified |
 | Models | Coverage depends on b10944 and the operations the add-on implements |
 | Memory and output | Converted weight copies need extra RAM; block rounding changes numerical results |
 | NPU unavailable at startup | Launcher chooses the GPU and logs the reason |

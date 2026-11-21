@@ -1,0 +1,1263 @@
+{
+ "date": "2026-11-19 and 2026-11-20",
+ "what": "The Strix Halo figures on the project's page: prompt reading speed with zest against the GPU alone, and how far its answers are from the GPU's. Two builds are in here. The 'speed' and 'accuracy' sections are the build of 2026-11-19 (the row split on by default, NPU weight copies limited to 20 GB by default). 'build_2026_11_20' is the build committed with this file, which differs in one thing: on Linux the default has no 20 GB limit, so Qwen3.8-27B gets all 64 layers on the NPU. 'page_rows' says which measurement each published row is.",
+ "machine": "Ryzen AI MAX+ 395 / Radeon 8060S / XDNA2 NPU, 128 GB, Arch Linux (Omarchy), kernel 7.2.15 with its own amdxdna driver",
+ "software": "llama.cpp b10944 Linux Vulkan release, unmodified; Mesa 26.2.5 (RADV); xrt 2.21.75-14, xrt-plugin-amdxdna 2.21.75-2; NPU power mode Default",
+ "zest_build": {
+  "libggml_zest_so_sha256_starts": "4806e80d6c326bda",
+  "the_same_file_before_and_after_every_series": true,
+  "source": "a87d2ae plus: results copied to the GPU by the GPU, pieces with no multiply run by the GPU, the row split on by default (GGML_XDNA_SPLIT=50). NPU weight copies limited to 20 GB by default."
+ },
+ "speed": {
+  "method": "tools/bench.ps1's, run by a Python port of it (now tools/bench.py): per round one process, `zest llama-bench -m MODEL -dev Vulkan0,XDNA0/Vulkan0 -p 2048 -n 0 -ub 2048 -b 2048 -r 3 -o json`, so the model loads once and the GPU-alone and with-zest figures sit next to each other in time; a round's ratio compares that pair; the row gives the median over the rounds and the slowest and fastest round. 'split_off' is a second process per round with GGML_XDNA_SPLIT=0 (the NPU takes whole pieces and the GPU waits its turn), with a GPU-alone figure of its own.",
+  "conditions": "Each model in a turn of its own with the machine reserved (the machine's scheduler holds other sessions' commands for the run and reports whether any outside process used more than half a core: CLEAN for every row). GPU load and load average at the start of each are in the rows.",
+  "rows": [
+   {
+    "model": "LFM2.5-2.6B",
+    "quant": "Q8_0",
+    "file": "LFM2.5-2.6B-Q8_0.gguf",
+    "llama_model_type": "lfm2 2.6B Q8_0",
+    "started": "11:31:18",
+    "gpu_busy_pct_at_start": 0,
+    "load_average_at_start": 1.13,
+    "machine_verdict": "CLEAN",
+    "from": "LiquidAI/LFM2.5-2.6B-GGUF",
+    "as_shipped": {
+     "gpu_alone_tokens_s": 2980.4,
+     "with_zest_tokens_s": 4636.4,
+     "ratio": 1.558,
+     "ratio_slowest_round": 1.548,
+     "ratio_fastest_round": 1.561,
+     "rounds": [
+      {
+       "gpu_alone": 2974.5,
+       "with_zest": 4637.4,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 2979.9,
+       "with_zest": 4645.9,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 2978.3,
+       "with_zest": 4648.3,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 2981.6,
+       "with_zest": 4644.8,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 2989.0,
+       "with_zest": 4627.0,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 2984.7,
+       "with_zest": 4634.5,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 2969.7,
+       "with_zest": 4631.1,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 2980.4,
+       "with_zest": 4631.5,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 2992.9,
+       "with_zest": 4636.4,
+       "npu_failures": 0
+      }
+     ]
+    }
+   },
+   {
+    "model": "LFM2.5-1.2B-Instruct",
+    "quant": "Q8_0",
+    "file": "LFM2.5-1.2B-Instruct-Q8_0.gguf",
+    "llama_model_type": "lfm2 1.2B Q8_0",
+    "started": "11:27:06",
+    "gpu_busy_pct_at_start": 0,
+    "load_average_at_start": 1.24,
+    "machine_verdict": "CLEAN",
+    "from": "LiquidAI/LFM2.5-1.2B-Instruct-GGUF",
+    "as_shipped": {
+     "gpu_alone_tokens_s": 6477.5,
+     "with_zest_tokens_s": 9879.8,
+     "ratio": 1.522,
+     "ratio_slowest_round": 1.304,
+     "ratio_fastest_round": 1.54,
+     "rounds": [
+      {
+       "gpu_alone": 6547.3,
+       "with_zest": 9885.1,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 6417.0,
+       "with_zest": 9884.6,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 6424.3,
+       "with_zest": 9854.6,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 6495.0,
+       "with_zest": 9906.0,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 6537.2,
+       "with_zest": 9879.8,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 6452.8,
+       "with_zest": 9832.0,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 6507.1,
+       "with_zest": 9887.1,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 6441.9,
+       "with_zest": 8397.3,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 6477.5,
+       "with_zest": 9856.5,
+       "npu_failures": 0
+      }
+     ]
+    }
+   },
+   {
+    "model": "Qwen3.8-27B, every layer on the NPU (GGML_XDNA_MAX_COPY_GB=30, as zest --memory-gb 30 sets; 25.8 GB of weight copies)",
+    "quant": "Q4_K_M",
+    "file": "Qwen3.8-27B-Q4_K_M.gguf",
+    "llama_model_type": "qwen35 27B Q4_K - Medium",
+    "started": "01:26:34",
+    "gpu_busy_pct_at_start": 2,
+    "load_average_at_start": 1.96,
+    "machine_verdict": "CLEAN",
+    "from": "unsloth/Qwen3.8-27B-GGUF",
+    "as_shipped": {
+     "gpu_alone_tokens_s": 343.2,
+     "with_zest_tokens_s": 493.8,
+     "ratio": 1.44,
+     "ratio_slowest_round": 1.436,
+     "ratio_fastest_round": 1.443,
+     "rounds": [
+      {
+       "gpu_alone": 343.2,
+       "with_zest": 494.1,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 343.2,
+       "with_zest": 494.2,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 342.1,
+       "with_zest": 493.6,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 343.0,
+       "with_zest": 493.7,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 344.0,
+       "with_zest": 493.8,
+       "npu_failures": 0
+      }
+     ]
+    },
+    "split_off": {
+     "gpu_alone_tokens_s": 342.4,
+     "with_zest_tokens_s": 337.7,
+     "ratio": 0.988,
+     "ratio_slowest_round": 0.984,
+     "ratio_fastest_round": 0.988,
+     "rounds": [
+      {
+       "gpu_alone": 343.3,
+       "with_zest": 337.7,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 342.4,
+       "with_zest": 336.9,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 342.5,
+       "with_zest": 338.3,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 341.5,
+       "with_zest": 337.6,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 341.7,
+       "with_zest": 337.7,
+       "npu_failures": 0
+      }
+     ]
+    }
+   },
+   {
+    "model": "Qwen3-4B",
+    "quant": "Q4_K_M",
+    "file": "Qwen3-4B-Q4_K_M.gguf",
+    "llama_model_type": "qwen3 4B Q4_K - Medium",
+    "started": "12:11:12",
+    "gpu_busy_pct_at_start": 1,
+    "load_average_at_start": 5.19,
+    "machine_verdict": "CLEAN",
+    "as_shipped": {
+     "gpu_alone_tokens_s": 1861.1,
+     "with_zest_tokens_s": 2588.8,
+     "ratio": 1.39,
+     "ratio_slowest_round": 1.388,
+     "ratio_fastest_round": 1.393,
+     "rounds": [
+      {
+       "gpu_alone": 1866.1,
+       "with_zest": 2592.5,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 1860.6,
+       "with_zest": 2590.8,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 1864.5,
+       "with_zest": 2588.8,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 1861.1,
+       "with_zest": 2586.3,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 1858.4,
+       "with_zest": 2588.0,
+       "npu_failures": 0
+      }
+     ]
+    }
+   },
+   {
+    "model": "Qwen3.5-9B",
+    "quant": "Q4_K_M",
+    "file": "Qwen3.5-9B-Q4_K_M.gguf",
+    "llama_model_type": "qwen35 9B Q4_K - Medium",
+    "started": "20:18:24",
+    "gpu_busy_pct_at_start": 2,
+    "load_average_at_start": 2.76,
+    "machine_verdict": "CLEAN",
+    "as_shipped": {
+     "gpu_alone_tokens_s": 1080.0,
+     "with_zest_tokens_s": 1411.9,
+     "ratio": 1.308,
+     "ratio_slowest_round": 1.307,
+     "ratio_fastest_round": 1.308,
+     "rounds": [
+      {
+       "gpu_alone": 1078.9,
+       "with_zest": 1411.3,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 1080.6,
+       "with_zest": 1413.0,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 1080.0,
+       "with_zest": 1412.8,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 1077.8,
+       "with_zest": 1408.2,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 1080.2,
+       "with_zest": 1411.9,
+       "npu_failures": 0
+      }
+     ]
+    },
+    "split_off": {
+     "gpu_alone_tokens_s": 1076.6,
+     "with_zest_tokens_s": 1042.3,
+     "ratio": 0.968,
+     "ratio_slowest_round": 0.962,
+     "ratio_fastest_round": 0.976,
+     "rounds": [
+      {
+       "gpu_alone": 1076.8,
+       "with_zest": 1036.3,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 1067.8,
+       "with_zest": 1042.5,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 1076.4,
+       "with_zest": 1048.4,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 1077.1,
+       "with_zest": 1041.1,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 1076.6,
+       "with_zest": 1042.3,
+       "npu_failures": 0
+      }
+     ]
+    }
+   },
+   {
+    "model": "Qwen3.8-27B",
+    "quant": "Q4_K_M",
+    "file": "Qwen3.8-27B-Q4_K_M.gguf",
+    "llama_model_type": "qwen35 27B Q4_K - Medium",
+    "started": "15:40:13",
+    "gpu_busy_pct_at_start": 0,
+    "load_average_at_start": 0.61,
+    "machine_verdict": "CLEAN",
+    "from": "unsloth/Qwen3.8-27B-GGUF",
+    "as_shipped": {
+     "gpu_alone_tokens_s": 343.3,
+     "with_zest_tokens_s": 448.5,
+     "ratio": 1.305,
+     "ratio_slowest_round": 1.301,
+     "ratio_fastest_round": 1.307,
+     "rounds": [
+      {
+       "gpu_alone": 346.3,
+       "with_zest": 450.4,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 343.3,
+       "with_zest": 448.7,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 343.3,
+       "with_zest": 448.1,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 344.1,
+       "with_zest": 448.5,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 342.7,
+       "with_zest": 447.7,
+       "npu_failures": 0
+      }
+     ]
+    },
+    "split_off": {
+     "gpu_alone_tokens_s": 343.7,
+     "with_zest_tokens_s": 340.5,
+     "ratio": 0.991,
+     "ratio_slowest_round": 0.987,
+     "ratio_fastest_round": 0.991,
+     "rounds": [
+      {
+       "gpu_alone": 343.7,
+       "with_zest": 340.5,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 343.8,
+       "with_zest": 340.2,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 345.0,
+       "with_zest": 340.6,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 343.7,
+       "with_zest": 340.6,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 342.9,
+       "with_zest": 339.9,
+       "npu_failures": 0
+      }
+     ]
+    }
+   },
+   {
+    "model": "Qwen3.8-27B",
+    "quant": "UD-IQ3_S",
+    "file": "Qwen3.8-27B-UD-IQ3_S.gguf",
+    "llama_model_type": "qwen35 27B IQ3_S - 3.4375 bpw",
+    "started": "17:48:51",
+    "gpu_busy_pct_at_start": 1,
+    "load_average_at_start": 3.4,
+    "machine_verdict": "CLEAN",
+    "from": "unsloth/Qwen3.8-27B-GGUF",
+    "as_shipped": {
+     "gpu_alone_tokens_s": 352.9,
+     "with_zest_tokens_s": 446.4,
+     "ratio": 1.266,
+     "ratio_slowest_round": 1.262,
+     "ratio_fastest_round": 1.266,
+     "rounds": [
+      {
+       "gpu_alone": 353.7,
+       "with_zest": 446.3,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 352.3,
+       "with_zest": 446.0,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 352.9,
+       "with_zest": 446.6,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 352.9,
+       "with_zest": 446.4,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 352.8,
+       "with_zest": 446.8,
+       "npu_failures": 0
+      }
+     ]
+    },
+    "split_off": {
+     "gpu_alone_tokens_s": 350.0,
+     "with_zest_tokens_s": 342.3,
+     "ratio": 0.978,
+     "ratio_slowest_round": 0.976,
+     "ratio_fastest_round": 0.982,
+     "rounds": [
+      {
+       "gpu_alone": 350.8,
+       "with_zest": 342.3,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 349.1,
+       "with_zest": 342.1,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 350.0,
+       "with_zest": 342.3,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 350.4,
+       "with_zest": 342.4,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 348.5,
+       "with_zest": 342.3,
+       "npu_failures": 0
+      }
+     ]
+    }
+   },
+   {
+    "model": "LFM2.5-350M",
+    "quant": "Q8_0",
+    "file": "LFM2.5-350M-Q8_0.gguf",
+    "llama_model_type": "lfm2 350M Q8_0",
+    "started": "11:17:56",
+    "gpu_busy_pct_at_start": 0,
+    "load_average_at_start": 0.26,
+    "machine_verdict": "CLEAN",
+    "from": "LiquidAI/LFM2.5-350M-GGUF",
+    "as_shipped": {
+     "gpu_alone_tokens_s": 18771.8,
+     "with_zest_tokens_s": 23834.5,
+     "ratio": 1.27,
+     "ratio_slowest_round": 1.256,
+     "ratio_fastest_round": 1.276,
+     "rounds": [
+      {
+       "gpu_alone": 18690.9,
+       "with_zest": 23534.0,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 19014.6,
+       "with_zest": 23886.6,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 18856.3,
+       "with_zest": 24024.3,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 18771.8,
+       "with_zest": 23834.5,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 18602.9,
+       "with_zest": 23702.0,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 18746.0,
+       "with_zest": 23824.9,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 18688.3,
+       "with_zest": 23709.7,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 18953.8,
+       "with_zest": 23879.4,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 18771.8,
+       "with_zest": 23949.8,
+       "npu_failures": 0
+      }
+     ]
+    }
+   },
+   {
+    "model": "Qwen3.5-2B",
+    "quant": "Q4_K_M",
+    "file": "Qwen3.5-2B-Q4_K_M.gguf",
+    "llama_model_type": "qwen35 2B Q4_K - Medium",
+    "started": "17:44:29",
+    "gpu_busy_pct_at_start": 1,
+    "load_average_at_start": 11.74,
+    "machine_verdict": "CLEAN",
+    "as_shipped": {
+     "gpu_alone_tokens_s": 3455.0,
+     "with_zest_tokens_s": 4292.1,
+     "ratio": 1.244,
+     "ratio_slowest_round": 1.239,
+     "ratio_fastest_round": 1.246,
+     "rounds": [
+      {
+       "gpu_alone": 3442.8,
+       "with_zest": 4288.7,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 3455.4,
+       "with_zest": 4298.3,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 3450.4,
+       "with_zest": 4289.2,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 3455.5,
+       "with_zest": 4295.5,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 3446.8,
+       "with_zest": 4293.4,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 3456.1,
+       "with_zest": 4288.6,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 3447.1,
+       "with_zest": 4292.1,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 3460.7,
+       "with_zest": 4289.1,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 3455.0,
+       "with_zest": 4302.0,
+       "npu_failures": 0
+      }
+     ]
+    },
+    "split_off": {
+     "gpu_alone_tokens_s": 3450.2,
+     "with_zest_tokens_s": 3298.9,
+     "ratio": 0.953,
+     "ratio_slowest_round": 0.941,
+     "ratio_fastest_round": 0.959,
+     "rounds": [
+      {
+       "gpu_alone": 3447.4,
+       "with_zest": 3295.3,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 3445.9,
+       "with_zest": 3302.7,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 3468.0,
+       "with_zest": 3295.2,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 3447.6,
+       "with_zest": 3305.5,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 3454.0,
+       "with_zest": 3290.8,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 3465.6,
+       "with_zest": 3300.9,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 3450.2,
+       "with_zest": 3247.2,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 3463.0,
+       "with_zest": 3298.9,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 3444.8,
+       "with_zest": 3301.9,
+       "npu_failures": 0
+      }
+     ]
+    }
+   },
+   {
+    "model": "Qwen3-Coder-30B-A3B-Instruct (mixture of experts)",
+    "quant": "Q4_K_M",
+    "file": "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
+    "llama_model_type": "qwen3moe 30B.A3B Q4_K - Medium",
+    "started": "21:29:29",
+    "gpu_busy_pct_at_start": 2,
+    "load_average_at_start": 3.25,
+    "machine_verdict": "CLEAN",
+    "as_shipped": {
+     "gpu_alone_tokens_s": 1714.5,
+     "with_zest_tokens_s": 1646.8,
+     "ratio": 0.961,
+     "ratio_slowest_round": 0.961,
+     "ratio_fastest_round": 0.962,
+     "rounds": [
+      {
+       "gpu_alone": 1716.5,
+       "with_zest": 1650.8,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 1716.2,
+       "with_zest": 1650.4,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 1714.5,
+       "with_zest": 1646.8,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 1712.4,
+       "with_zest": 1645.9,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 1713.8,
+       "with_zest": 1646.2,
+       "npu_failures": 0
+      }
+     ]
+    },
+    "split_off": {
+     "gpu_alone_tokens_s": 1714.2,
+     "with_zest_tokens_s": 1441.5,
+     "ratio": 0.841,
+     "ratio_slowest_round": 0.839,
+     "ratio_fastest_round": 0.843,
+     "rounds": [
+      {
+       "gpu_alone": 1716.8,
+       "with_zest": 1443.1,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 1711.8,
+       "with_zest": 1440.0,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 1714.2,
+       "with_zest": 1438.0,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 1710.0,
+       "with_zest": 1441.5,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 1714.3,
+       "with_zest": 1443.2,
+       "npu_failures": 0
+      }
+     ]
+    }
+   },
+   {
+    "model": "Qwen3.6-35B-A3B (mixture of experts)",
+    "quant": "UD-Q4_K_XL",
+    "file": "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+    "llama_model_type": "qwen35moe 35B.A3B Q4_K - Medium",
+    "started": "22:41:52",
+    "gpu_busy_pct_at_start": 2,
+    "load_average_at_start": 1.96,
+    "machine_verdict": "CLEAN",
+    "from": "unsloth/Qwen3.6-35B-A3B-GGUF",
+    "as_shipped": {
+     "gpu_alone_tokens_s": 1355.7,
+     "with_zest_tokens_s": 1286.7,
+     "ratio": 0.948,
+     "ratio_slowest_round": 0.945,
+     "ratio_fastest_round": 0.964,
+     "rounds": [
+      {
+       "gpu_alone": 1329.9,
+       "with_zest": 1282.5,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 1355.7,
+       "with_zest": 1284.9,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 1351.5,
+       "with_zest": 1287.7,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 1362.0,
+       "with_zest": 1287.3,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 1356.6,
+       "with_zest": 1286.7,
+       "npu_failures": 0
+      }
+     ]
+    },
+    "split_off": {
+     "gpu_alone_tokens_s": 1356.6,
+     "with_zest_tokens_s": 1098.2,
+     "ratio": 0.81,
+     "ratio_slowest_round": 0.807,
+     "ratio_fastest_round": 0.811,
+     "rounds": [
+      {
+       "gpu_alone": 1353.0,
+       "with_zest": 1095.5,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 1356.7,
+       "with_zest": 1099.5,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 1356.6,
+       "with_zest": 1100.7,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 1355.2,
+       "with_zest": 1097.1,
+       "npu_failures": 0
+      },
+      {
+       "gpu_alone": 1361.2,
+       "with_zest": 1098.2,
+       "npu_failures": 0
+      }
+     ]
+    }
+   }
+  ]
+ },
+ "accuracy": {
+  "method": "tools/bench.ps1 -Kl's: `zest llama-perplexity -m MODEL -f TEXT -c 512 -b 2048 -ub 2048 --chunks 8` on the GPU alone (-dev Vulkan0, logits saved), then with zest (-dev XDNA0,Vulkan0 -ts 0,1 --kl-divergence) as shipped and with GGML_XDNA_SPLIT=0. Four 512-token pieces to a 2,048-token batch; the second half of each piece is scored (2,040 tokens).",
+  "text": "this repository's README.md followed by specs/xdna-backend/spec.md as they stood on 2026-11-19 14:43 (88,109 bytes, sha256 starts a9c61401c4585e55)",
+  "rows": [
+   {
+    "model": "LFM2.5-2.6B",
+    "quant": "Q8_0",
+    "as_shipped": {
+     "mean_kld": 0.003599,
+     "max_kld": 0.2104,
+     "p99_9_kld": 0.091209,
+     "same_top_pct": 97.451,
+     "npu_failures": 0
+    },
+    "split_off": {
+     "mean_kld": 0.006588,
+     "max_kld": 0.2104,
+     "p99_9_kld": 0.103405,
+     "same_top_pct": 94.461,
+     "npu_failures": 0
+    }
+   },
+   {
+    "model": "LFM2.5-1.2B-Instruct",
+    "quant": "Q8_0",
+    "as_shipped": {
+     "mean_kld": 0.001992,
+     "max_kld": 0.028135,
+     "p99_9_kld": 0.026333,
+     "same_top_pct": 97.206,
+     "npu_failures": 0
+    },
+    "split_off": {
+     "mean_kld": 0.004092,
+     "max_kld": 0.115975,
+     "p99_9_kld": 0.03956,
+     "same_top_pct": 94.706,
+     "npu_failures": 0
+    }
+   },
+   {
+    "model": "Qwen3.8-27B, every layer on the NPU (GGML_XDNA_MAX_COPY_GB=30, as zest --memory-gb 30 sets; 25.8 GB of weight copies)",
+    "quant": "Q4_K_M",
+    "as_shipped": {
+     "mean_kld": 0.00311,
+     "max_kld": 0.064341,
+     "p99_9_kld": 0.022885,
+     "same_top_pct": 95.931,
+     "npu_failures": 0
+    }
+   },
+   {
+    "model": "Qwen3-4B",
+    "quant": "Q4_K_M",
+    "as_shipped": {
+     "mean_kld": 0.010328,
+     "max_kld": 14.021942,
+     "p99_9_kld": 0.05056,
+     "same_top_pct": 97.255,
+     "npu_failures": 0
+    },
+    "split_off": {
+     "mean_kld": 0.013411,
+     "max_kld": 14.021942,
+     "p99_9_kld": 0.066452,
+     "same_top_pct": 95.098,
+     "npu_failures": 0
+    }
+   },
+   {
+    "model": "Qwen3.5-9B",
+    "quant": "Q4_K_M",
+    "as_shipped": {
+     "mean_kld": 0.001781,
+     "max_kld": 0.023856,
+     "p99_9_kld": 0.020846,
+     "same_top_pct": 97.892,
+     "npu_failures": 0
+    },
+    "split_off": {
+     "mean_kld": 0.003709,
+     "max_kld": 0.03475,
+     "p99_9_kld": 0.023885,
+     "same_top_pct": 95.784,
+     "npu_failures": 0
+    }
+   },
+   {
+    "model": "Qwen3.8-27B",
+    "quant": "Q4_K_M",
+    "as_shipped": {
+     "mean_kld": 0.002781,
+     "max_kld": 0.030246,
+     "p99_9_kld": 0.024115,
+     "same_top_pct": 96.176,
+     "npu_failures": 0
+    },
+    "split_off": {
+     "mean_kld": 0.003424,
+     "max_kld": 0.240055,
+     "p99_9_kld": 0.038921,
+     "same_top_pct": 96.324,
+     "npu_failures": 0
+    }
+   },
+   {
+    "model": "Qwen3.8-27B",
+    "quant": "UD-IQ3_S",
+    "as_shipped": {
+     "mean_kld": 0.003491,
+     "max_kld": 0.25802,
+     "p99_9_kld": 0.062111,
+     "same_top_pct": 95.833,
+     "npu_failures": 0
+    },
+    "split_off": {
+     "mean_kld": 0.003992,
+     "max_kld": 0.25802,
+     "p99_9_kld": 0.052874,
+     "same_top_pct": 95.833,
+     "npu_failures": 0
+    }
+   },
+   {
+    "model": "LFM2.5-350M",
+    "quant": "Q8_0",
+    "as_shipped": {
+     "mean_kld": 0.008333,
+     "max_kld": 0.450779,
+     "p99_9_kld": 0.237539,
+     "same_top_pct": 95.49,
+     "npu_failures": 0
+    },
+    "split_off": {
+     "mean_kld": 0.013777,
+     "max_kld": 0.450779,
+     "p99_9_kld": 0.237539,
+     "same_top_pct": 92.451,
+     "npu_failures": 0
+    }
+   },
+   {
+    "model": "Qwen3.5-2B",
+    "quant": "Q4_K_M",
+    "as_shipped": {
+     "mean_kld": 0.00137,
+     "max_kld": 0.037753,
+     "p99_9_kld": 0.017854,
+     "same_top_pct": 97.647,
+     "npu_failures": 0
+    },
+    "split_off": {
+     "mean_kld": 0.002784,
+     "max_kld": 0.037753,
+     "p99_9_kld": 0.017883,
+     "same_top_pct": 95.784,
+     "npu_failures": 0
+    }
+   },
+   {
+    "model": "Qwen3-Coder-30B-A3B-Instruct (mixture of experts)",
+    "quant": "Q4_K_M",
+    "as_shipped": {
+     "mean_kld": 0.004915,
+     "max_kld": 0.231586,
+     "p99_9_kld": 0.149186,
+     "same_top_pct": 96.324,
+     "npu_failures": 0
+    },
+    "split_off": {
+     "mean_kld": 0.005867,
+     "max_kld": 0.231586,
+     "p99_9_kld": 0.137794,
+     "same_top_pct": 95.343,
+     "npu_failures": 0
+    }
+   },
+   {
+    "model": "Qwen3.6-35B-A3B (mixture of experts)",
+    "quant": "UD-Q4_K_XL",
+    "as_shipped": {
+     "mean_kld": 0.007235,
+     "max_kld": 0.12885,
+     "p99_9_kld": 0.094636,
+     "same_top_pct": 94.02,
+     "npu_failures": 0
+    },
+    "split_off": {
+     "mean_kld": 0.009457,
+     "max_kld": 0.192107,
+     "p99_9_kld": 0.131909,
+     "same_top_pct": 93.971,
+     "npu_failures": 0
+    }
+   }
+  ],
+  "note": "The Qwen3.8-27B all-layers row has no split-off pass. With the split, half of each piece's rows are the GPU's own results, which is why its figures are lower."
+ },
+ "qwen3_4b_one_token": {
+  "what": "Qwen3-4B's mean KL (0.0103) is one token: without it the mean is 0.0035. Diagnosed 2026-11-19 20:21 over the first four pieces of the same text, each run's logits saved and compared token by token (KL from the saved 16-bit log-probabilities, which stop 16 below the largest logit, so the largest reads 8.26 where llama-perplexity's own figure is 14.02).",
+  "where": "piece 1, position 449: after '...GPU-only and NPU + GPU](https://cyron', the third time that address appears in the text; the next token is 'ius'",
+  "probability_of_the_next_token": {
+   "gpu_alone": 0.1651,
+   "gpu_alone_second_run": 0.1651,
+   "cpu_alone": 0.0608,
+   "zest_as_shipped": 1.0,
+   "zest_split_off": 1.0,
+   "zest_split_off_chain_off": 1.0,
+   "zest_split_off_quantized_weight_kernel": 1.0,
+   "zest_split_off_build_a87d2ae": 1.0,
+   "zest_split_off_npu_share_on_the_cpu (GGML_XDNA_HOST_ONLY=1)": 0.8117,
+   "zest_split_off_multiplies_only (GGML_XDNA_BLOCKS=0)": 0.0095
+  },
+  "kl_at_that_token_against_the_gpu": {
+   "cpu_alone": 0.5537,
+   "zest_as_shipped": 8.2589,
+   "zest_split_off": 8.2589,
+   "zest_npu_share_on_the_cpu": 1.4401,
+   "zest_multiplies_only": 1.1806
+  },
+  "kl_at_that_token_against_the_cpu": {
+   "gpu_alone": 0.8006,
+   "zest_split_off": 6.58
+  },
+  "mean_kl_over_the_four_pieces_against_the_gpu": {
+   "gpu_second_run": 0.0,
+   "cpu_alone": 0.007823,
+   "zest_as_shipped": 0.01098,
+   "zest_split_off": 0.014132,
+   "zest_as_shipped_without_that_token": 0.002886,
+   "zest_split_off_without_that_token": 0.006041,
+   "cpu_alone_without_its_largest_token": 0.007287
+  },
+  "reading": "Not a fault in zest's build: the position is one where the model amplifies any rounding. llama.cpp's own CPU and GPU results differ most at this same token (0.80, the next largest 0.32 and then under 0.1), and zest's variants land anywhere from 0.01 to 1.00. The NPU's 8-bit blocks round more than the GPU's floats, so zest moves furthest. The result is the same with the build before the changes committed here, with chains off and with the quantized-weight kernel, and the GPU repeats itself exactly. Which side a higher-precision file of the model agrees with was not checked."
+ },
+ "npu_memory_ceiling": {
+  "what": "tools/npu-ceiling-repro.cpp (NPU only): fills the NPU with weight buffers a step at a time and checks a multiply with every buffer bit for bit. On Strix Point under Windows it finds results damaged past 26.0 GiB with no error.",
+  "runs": [
+   "2026-11-20 02:10, --start-gib 16 --step-gib 2 --max-gib 40 --min-free-gib 20: 13 steps, 16.0 to 40.0 GiB, 0 buffers wrong at every step",
+   "2026-11-20 05:08, --start-gib 40 --step-gib 4 --max-gib 64 --min-free-gib 24: 7 steps, 40.0 to 64.0 GiB, 0 buffers wrong at every step"
+  ],
+  "result": "nothing damaged, 16 to 64 GiB",
+  "run_median_ms": 4,
+  "reading": "No ceiling up to 64 GiB on this machine under Linux, so the 20 GB default limit was lifted on Linux (the owner's decision, 2026-11-20). Windows keeps it."
+ },
+ "build_2026_11_20": {
+  "zest_build": {
+   "libggml_zest_so_sha256_starts": "fea98a29f87d2ff2",
+   "source": "the 2026-11-19 build plus: no 20 GB default limit on NPU weight copies on Linux (the limit is the memory free at load less what is kept back). Nothing else changed."
+  },
+  "tests": "ctest -L host|npu, 2026-11-20 06:11: 27 of 27 passed",
+  "record": "The per-round files of these runs were in /tmp and were lost when the machine restarted on 2026-11-20; the figures below were recorded from their summaries at the time. Only the UD-IQ3_S rerun's rounds were kept. The series is being measured again (2026-11-21).",
+  "speed": [
+   {
+    "model": "Qwen3.8-27B",
+    "quant": "Q4_K_M",
+    "started": "06:13:22",
+    "machine_verdict": "CLEAN",
+    "rounds": 5,
+    "layers_on_the_npu": "all 64 (25.8 GB of copies)",
+    "gpu_alone_tokens_s": 343,
+    "as_shipped_ratio": [
+     1.44,
+     1.43,
+     1.45
+    ],
+    "split_off_ratio": [
+     0.99,
+     0.98,
+     0.99
+    ],
+    "note": "ratios as median, slowest, fastest round; a two-prompt check at 06:11 read 496.0 tokens/s"
+   },
+   {
+    "model": "Qwen3.8-27B",
+    "quant": "UD-IQ3_S",
+    "started": "09:00:29 (a rerun; the first, at 07:15, gave the same 1.38 and 0.96)",
+    "machine_verdict": "NOISY both times: the kernel's memory compaction thread (kcompactd0) took a core for about 11 s in the first and 3 s in the rerun, and another session's python 2 s in the rerun",
+    "layers_on_the_npu": "all 64",
+    "as_shipped": {
+     "gpu_alone_tokens_s": 353.8,
+     "with_zest_tokens_s": 487.5,
+     "ratio": 1.38,
+     "ratio_slowest_round": 1.38,
+     "ratio_fastest_round": 1.38,
+     "rounds": [
+      {
+       "gpu_alone": 353.7,
+       "with_zest": 487.5
+      },
+      {
+       "gpu_alone": 353.8,
+       "with_zest": 487.7
+      },
+      {
+       "gpu_alone": 353.4,
+       "with_zest": 487.4
+      },
+      {
+       "gpu_alone": 354.0,
+       "with_zest": 487.4
+      },
+      {
+       "gpu_alone": 353.9,
+       "with_zest": 487.5
+      }
+     ]
+    },
+    "split_off": {
+     "gpu_alone_tokens_s": 351.8,
+     "with_zest_tokens_s": 338.6,
+     "ratio": 0.96,
+     "ratio_slowest_round": 0.96,
+     "ratio_fastest_round": 0.97,
+     "rounds": [
+      {
+       "gpu_alone": 352.5,
+       "with_zest": 339.6
+      },
+      {
+       "gpu_alone": 351.8,
+       "with_zest": 338.6
+      },
+      {
+       "gpu_alone": 351.5,
+       "with_zest": 339.8
+      },
+      {
+       "gpu_alone": 352.7,
+       "with_zest": 338.6
+      },
+      {
+       "gpu_alone": 351.5,
+       "with_zest": 338.6
+      }
+     ]
+    }
+   },
+   {
+    "model": "Qwen3.8-27B, limit set to 20 GB (GGML_XDNA_MAX_COPY_GB=20)",
+    "quant": "Q4_K_M",
+    "started": "08:50:52",
+    "machine_verdict": "NOISY: kcompactd0 took a core for about 3 s",
+    "rounds": 5,
+    "gpu_alone_tokens_s": 344,
+    "as_shipped_ratio": [
+     1.31,
+     1.3,
+     1.32
+    ],
+    "split_off_ratio": [
+     0.99,
+     0.99,
+     1.0
+    ]
+   },
+   {
+    "model": "LFM2.5-2.6B",
+    "quant": "Q8_0",
+    "started": "09:10:06",
+    "machine_verdict": "CLEAN",
+    "rounds": 9,
+    "gpu_alone_tokens_s": 2988,
+    "as_shipped_ratio": [
+     1.55,
+     1.55,
+     1.57
+    ],
+    "split_off_ratio": [
+     1.11,
+     1.1,
+     1.11
+    ]
+   }
+  ],
+  "not_counted": "LFM2.5-350M, Qwen3-4B and Qwen3.5-9B were measured at 11:28-12:25 with another project's four-hour GPU job running (started under a second scheduler the first cannot see): the GPU alone read at about a third of its speed (721 tokens/s on Qwen3-4B against 1,861) and the scheduler marked all three NOISY. They were thrown out.",
+  "accuracy": {
+   "run": "2026-11-20 06:22, same method and text as the 'accuracy' section",
+   "qwen38_27b_q4km": {
+    "as_shipped": {
+     "mean_kld": 0.00311,
+     "max_kld": 0.064341,
+     "same_top_pct": 95.931
+    },
+    "split_off": {
+     "mean_kld": 0.004153,
+     "max_kld": 0.274636,
+     "same_top_pct": 95.931
+    },
+    "limit_20_gb": {
+     "mean_kld": 0.002781,
+     "max_kld": 0.030246,
+     "same_top_pct": 96.176
+    }
+   },
+   "qwen38_27b_ud_iq3s": {
+    "as_shipped": {
+     "mean_kld": 0.003723,
+     "max_kld": 0.287732,
+     "same_top_pct": 96.275
+    },
+    "split_off": {
+     "mean_kld": 0.004528,
+     "max_kld": 0.287732,
+     "same_top_pct": 95.735
+    }
+   },
+   "the_other_nine_models": "the same mean, largest and same-top figures as in the 'accuracy' section, to the last digit, as shipped and with the split off: the limit does not reach them",
+   "npu_failures": 0
+  }
+ },
+ "page_rows": {
+  "Qwen3.8-27B Q4_K_M": "the 'speed' row 'every layer on the NPU' (the 2026-11-19 build with the limit set to 30 GB: the same 64 layers the 2026-11-20 build takes by default), 343 -> 494 tokens/s, 1.44-1.44x; the 2026-11-20 build's own run gave 1.43-1.45x",
+  "Qwen3.8-27B UD-IQ3_S": "build_2026_11_20, the rerun: 354 -> 488 tokens/s, 1.38-1.38x",
+  "Qwen3.8-27B Q4_K_M, 20 GB limit": "the 'speed' row Qwen3.8-27B Q4_K_M: 343 -> 449 tokens/s, 1.30-1.31x; the 2026-11-20 build gave 1.30-1.32x",
+  "every other row": "the 'speed' section (the 2026-11-19 build). The 2026-11-20 build changes nothing for these models: their weight copies are under 20 GB, their accuracy figures are the same to the last digit on both builds, and LFM2.5-2.6B measured on both gave 2,980 and 2,988 tokens/s on the GPU alone and 1.55-1.56x and 1.55-1.57x."
+ }
+}
