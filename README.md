@@ -18,13 +18,14 @@ no NPU kernel to compile for each model. Qwen, LFM, and Granite are examples,
 rather than a fixed list of supported models. Coverage depends on the bundled
 llama.cpp build and the operations the add-on implements; speedups vary by model.
 
-**[Download the Windows preview](https://github.com/Cyronius/zest/releases/tag/v0.3.0)**
-· [Setup guide](docs/lemonade.md)
+**Download v0.3.0: [Windows](https://github.com/Cyronius/zest/releases/download/v0.3.0/zest-v0.3.0-llama-b12109-win-x64.zip)
+· [Linux](https://github.com/Cyronius/zest/releases/download/v0.3.0/zest-v0.3.0-llama-b12109-ubuntu-x64.tar.gz)**
+· [Windows setup with Lemonade](docs/lemonade.md)
+· [Linux setup](docs/technical-guide.md#linux)
 · [Website](https://cyronius.github.io/zest/)
-· [Direct llama.cpp / Linux](docs/technical-guide.md)
 
-This is an independent community add-on. The tested preview uses
-Lemonade **2026.47.1** and the bundled **llama.cpp b12109** backend.
+This is an independent community add-on for Windows and Linux. Both packages
+use **llama.cpp b12109**, the build Lemonade **2026.47.1** bundles.
 Packages include the `zest` and `npu` commands on Windows and Linux, with
 `ggml-zest.dll` on Windows and `libggml-zest.so` on Linux.
 Keep that backend together: the DLL won't work with an arbitrary newer build.
