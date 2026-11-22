@@ -62,9 +62,10 @@
           <div class="hero-copy">
             <h1 id="hero-title">Use your <em>NPU</em><br />in Lemonade.</h1>
             <p>
-              Run many GGUF models through Lemonade's llama.cpp backend. Your
-              NPU helps read long prompts; your GPU writes the reply. No ONNX
-              or Q4NX export needed.
+              Run many GGUF models through Lemonade's llama.cpp backend on
+              Windows, or with llama.cpp directly on Linux. Your NPU helps read
+              long prompts; your GPU writes the reply. No ONNX or Q4NX export
+              needed.
             </p>
             <div class="actions">
               <a
@@ -72,7 +73,14 @@
                 href="https://github.com/Cyronius/zest/releases/download/v0.3.0/zest-v0.3.0-llama-b12109-win-x64.zip"
                 ><svg viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M12 3v12m-5-5 5 5 5-5M4 15v5h16v-5" /></svg
-                >Download Windows preview</a
+                >Download for Windows</a
+              >
+              <a
+                class="button secondary"
+                href="https://github.com/Cyronius/zest/releases/download/v0.3.0/zest-v0.3.0-llama-b12109-ubuntu-x64.tar.gz"
+                ><svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 3v12m-5-5 5 5 5-5M4 15v5h16v-5" /></svg
+                >Download for Linux</a
               >
               <a class="text-link" href="#get-started"
                 >Setup guide
@@ -119,8 +127,9 @@
           </div>
         </div>
         <p class="preview-note">
-          Zest is an independent community add-on. Windows 11 preview, tested on
-          Strix Point with Lemonade 2026.47.1.
+          Zest is an independent community add-on for Windows 11 and Linux. Tested
+          on Strix Point with Lemonade 2026.47.1 on Windows, and on Strix Halo
+          with llama.cpp directly under Linux.
         </p>
       </section>
 
@@ -225,9 +234,10 @@
         <div class="section-intro">
           <h2 id="setup-title">Try it on your laptop</h2>
           <p>
-            You'll need Windows 11, Lemonade 2026.47.1, a local GGUF file,
-            a Ryzen AI NPU with its AMD driver, and a Vulkan GPU driver. The
-            preview includes the matching backend.
+            On Windows you'll need Windows 11, Lemonade 2026.47.1, a local
+            GGUF file, a Ryzen AI NPU with its AMD driver, and a Vulkan GPU
+            driver. The download includes the matching backend.
+            <a href="#linux">On Linux, see below.</a>
           </p>
         </div>
         <ol class="steps">
@@ -236,14 +246,14 @@
             <div>
               <h3>Download and unzip</h3>
               <p>
-                Extract the Windows preview and keep its files together.
+                Extract the Windows download and keep its files together.
                 Lemonade and model weights are separate downloads.
               </p>
             </div>
             <a
               class="text-link"
               href="https://github.com/Cyronius/zest/releases/tag/v0.3.0"
-              >Windows preview
+              >Windows download
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M4 12h16m-6-6 6 6-6 6" /></svg
             ></a>
@@ -294,6 +304,29 @@
           role="status"
           aria-live="polite"
         ></p>
+        <div class="linux-setup" id="linux">
+          <h3>On Linux</h3>
+          <p>
+            Download the Ubuntu package, unpack it, and start llama.cpp's
+            server with the NPU. You'll need AMD's NPU driver and XRT, Mesa's
+            Vulkan driver, and enough locked memory for the NPU's buffers; the
+            technical guide covers each one.
+          </p>
+          <pre><code>tar -xzf zest-v0.3.0-llama-b12109-ubuntu-x64.tar.gz
+cd zest-v0.3.0-llama-b12109-ubuntu-x64
+./zest llama-server -m model.gguf</code></pre>
+          <p>
+            The server answers OpenAI-style requests at
+            <code>http://127.0.0.1:8080</code>, so chat apps that take a custom
+            server address can use it. Running it through Lemonade on Linux
+            hasn't been verified yet.
+          </p>
+          <p class="setup-links">
+            <a href="https://github.com/Cyronius/zest/releases/download/v0.3.0/zest-v0.3.0-llama-b12109-ubuntu-x64.tar.gz">Linux download</a
+            ><span>·</span
+            ><a href="https://github.com/Cyronius/zest/blob/main/docs/technical-guide.md#linux">Linux setup: driver, XRT and memory</a>
+          </p>
+        </div>
         <div class="compatibility">
           <h3>What we've tested so far</h3>
           <div class="compat-columns">
