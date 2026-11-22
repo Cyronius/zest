@@ -500,6 +500,10 @@ h3 {
   line-height: 1.8;
 }
 
+.model-table-scroll + p {
+  margin-top: 22px;
+}
+
 .model-table-scroll {
   overflow-x: auto;
   scrollbar-color: var(--yellow) var(--green);

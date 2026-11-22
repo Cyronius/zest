@@ -2,7 +2,7 @@
 // the backend then changes nothing, where offering the device would have it
 // claim work it can't do. Simulated with a kernel path that names nothing,
 // which fails the same check a missing driver or an untested chip does.
-// Host-only mode (GGML_XDNA_HOST_ONLY) must still offer the device, for
+// Host-only mode (ZEST_HOST_ONLY) must still offer the device, for
 // tests on machines without an NPU; it's cleared here so it can't hide the
 // failure.
 //
@@ -20,11 +20,11 @@
 
 int main(int argc, char ** argv) {
 #ifdef _WIN32
-    if (argc < 2 || strcmp(argv[1], "--no-driver") != 0) _putenv("GGML_XDNA_KERNELS=Z:\\no\\such\\kernel.xclbin");
-    _putenv("GGML_XDNA_HOST_ONLY=");
+    if (argc < 2 || strcmp(argv[1], "--no-driver") != 0) _putenv("ZEST_KERNELS=Z:\\no\\such\\kernel.xclbin");
+    _putenv("ZEST_HOST_ONLY=");
 #else
-    if (argc < 2 || strcmp(argv[1], "--no-driver") != 0) setenv("GGML_XDNA_KERNELS", "/no/such/kernel.xclbin", 1);
-    unsetenv("GGML_XDNA_HOST_ONLY");
+    if (argc < 2 || strcmp(argv[1], "--no-driver") != 0) setenv("ZEST_KERNELS", "/no/such/kernel.xclbin", 1);
+    unsetenv("ZEST_HOST_ONLY");
 #endif
     ggml_backend_load_all();
 

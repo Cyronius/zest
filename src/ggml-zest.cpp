@@ -69,19 +69,19 @@ static int64_t env_int(const char * name, int64_t def) { return xdna_env_int(nam
 // between 512 and 1,024 costs about what 1,024 does. `npu --min-chunk`
 // sets it.
 static int64_t xdna_min_batch() {
-    static int64_t v = env_int("GGML_XDNA_MIN_BATCH", 1024);
+    static int64_t v = env_int("ZEST_MIN_BATCH", 1024);
     return v;
 }
 
 // A dispatch costs something whatever it computes, so tiny matmuls stay on
 // the GPU even at a large batch.
 static int64_t xdna_min_mflop() {
-    static int64_t v = env_int("GGML_XDNA_MIN_MFLOP", 256);
+    static int64_t v = env_int("ZEST_MIN_MFLOP", 256);
     return v;
 }
 
 static int xdna_n_threads() {
-    static int v = (int) env_int("GGML_XDNA_N_THREADS", [] {
+    static int v = (int) env_int("ZEST_N_THREADS", [] {
         const unsigned hc = std::thread::hardware_concurrency();
         return hc ? (int) hc : 4;
     }());
@@ -90,7 +90,7 @@ static int xdna_n_threads() {
 
 // How the backend runs, decided once, when llama.cpp registers it:
 //   npu   the NPU opens and runs the kernel (xdna_npu_usable)
-//   host  GGML_XDNA_HOST_ONLY=1: claimed matmuls run on a CPU reference,
+//   host  ZEST_HOST_ONLY=1: claimed matmuls run on a CPU reference,
 //         for tests and CI on machines without an NPU
 //   off   neither: no device is offered, and llama.cpp runs as if the backend
 //         weren't there
@@ -98,8 +98,8 @@ enum class xdna_mode { off, npu, host };
 
 static xdna_mode xdna_run_mode() {
     static const xdna_mode m = [] {
-        if (env_int("GGML_XDNA_HOST_ONLY", 0) != 0) {
-            GGML_LOG_INFO("xdna: host-only mode (GGML_XDNA_HOST_ONLY): claimed matmuls run on the CPU\n");
+        if (env_int("ZEST_HOST_ONLY", 0) != 0) {
+            GGML_LOG_INFO("xdna: host-only mode (ZEST_HOST_ONLY): claimed matmuls run on the CPU\n");
             return xdna_mode::host;
         }
 #ifdef XDNA_HAVE_NPU
@@ -173,13 +173,16 @@ static const xdna_vk & xdna_vulkan() {
 //
 
 // Host memory we read Vulkan's tensors into is Vulkan's pinned memory, where
-// the GPU copies fastest. GGML_XDNA_PINNED=0 uses ordinary memory instead: a
+// the GPU copies fastest. ZEST_PINNED=0 uses ordinary memory instead: a
 // diagnostic, and for software Vulkan devices (CI's lavapipe on Windows hands
 // out pinned memory ggml then rejects as misaligned).
 static bool xdna_pinned_mem() {
-    static const bool v = env_int("GGML_XDNA_PINNED", 1) != 0;
+    static const bool v = env_int("ZEST_PINNED", 1) != 0;
     return v;
 }
+
+// Whether a weight's NPU copy goes under the quantized-weight kernel (the budget's choice, below).
+static bool xdna_weight_quant(const ggml_tensor * w);
 
 struct xdna_context {
     ggml_backend_t vk = nullptr;  // our own Vulkan backend, for async reads, and pieces after an NPU failure
@@ -193,7 +196,7 @@ struct xdna_context {
     size_t gpu_in_size = 0;
 
     // Each claimed weight's raw bytes, read once, for matmuls run on the
-    // host (the NPU keeps its own 8-bit copy). Only tensors in buffers
+    // host (the NPU keeps its own BFP16 copy). Only tensors in buffers
     // llama.cpp marks as weights are kept (their contents never change after loading),
     // keyed on where they live and what they are rather than on the tensor
     // struct, whose address can be reused.
@@ -215,13 +218,18 @@ struct xdna_context {
 
     std::vector<uint8_t> out;  // a result, before it goes back to Vulkan
 
-    // where the time goes, printed with GGML_XDNA_TRACE=1 every `trace_every`
+    // where the time goes, printed with ZEST_TRACE=1 every `trace_every`
     // matmuls: reading inputs from Vulkan, writing results back, everything
     // inside graph_compute
     double read_ms = 0, write_ms = 0, compute_ms = 0;
     int64_t matmuls = 0, pieces = 0;
     int64_t late_copies = 0;  // NPU weight copies built inside a piece, not at load
     int64_t gpu_pieces = 0;   // pieces the GPU ran after an NPU failure
+    int64_t bare_pieces = 0;  // pieces with no multiply in them, which the GPU ran
+    // split pieces (ZEST_SPLIT): how many, the GPU's time on its rows,
+    // and how long the NPU's side then waited for it
+    int64_t split_pieces = 0;
+    double split_gpu_ms = 0, split_wait_ms = 0;
 
 #ifdef XDNA_HAVE_NPU
     // the NPU, started on first use; null in host-only mode or once it failed
@@ -245,9 +253,9 @@ struct xdna_context {
     }
 
     // Weight copies built while the model loads: graph_optimize lists the
-    // copies each piece will use as llama.cpp plans it, and a thread of their
-    // own builds them. A piece waits for that thread before it runs, so
-    // nothing else uses the NPU or our Vulkan backend while it builds.
+    // copies each piece will use as llama.cpp plans it. The load callback
+    // waits for the builder before returning, so the first request does not
+    // pay for the copies.
     struct build_job { const ggml_tensor * w, * up; };  // up: the up weight of a fused gate/up
     std::thread builder;
     std::mutex build_mu;
@@ -296,7 +304,7 @@ struct xdna_context {
             } else {
                 raw.resize(ggml_nbytes(j.w));
                 read(j.w, raw.data());
-                ok = npu->add_weight(key, raw.data(), err);
+                ok = npu->add_weight(key, raw.data(), err, xdna_weight_quant(j.w));
             }
             std::lock_guard<std::mutex> lk(build_mu);
             if (ok) built_at_load++;
@@ -315,7 +323,7 @@ struct xdna_context {
             read(uw, u.data());
             up = u.data();
         }
-        return npu->add_fused(xdna_npu::gate_key(gw, uw), g.data(), up, err);
+        return npu->add_fused(xdna_npu::gate_key(gw, uw), g.data(), up, err, xdna_weight_quant(gw));
     }
 
     // Waits for the copies queued so far. A copy that failed to build fails
@@ -357,14 +365,39 @@ struct xdna_context {
         return pin ? ggml_backend_buffer_get_base(pin) : nullptr;
     }
 
-    // a tensor from Vulkan memory into host memory, the GPU doing the copy
-    void read(const ggml_tensor * t, void * dst) {
+    // a tensor (or its first `bytes`) from Vulkan memory into host memory, the GPU doing the copy
+    void read(const ggml_tensor * t, void * dst, size_t bytes = 0) {
+        if (!bytes) bytes = ggml_nbytes(t);
         if (t->buffer && ggml_backend_buffer_is_host(t->buffer)) {  // a graph input the CPU holds
-            memcpy(dst, t->data, ggml_nbytes(t));
+            memcpy(dst, t->data, bytes);
             return;
         }
-        ggml_backend_tensor_get_async(vk, t, dst, 0, ggml_nbytes(t));
+        ggml_backend_tensor_get_async(vk, t, dst, 0, bytes);
         ggml_backend_synchronize(vk);
+    }
+
+    // A result (or its first `bytes`) from the piece's host memory into Vulkan
+    // memory: the GPU copies it from our pinned memory, when finish_writes
+    // says so. ggml's own write is a memcpy into the mapped buffer, and what
+    // a memcpy of under 24 MB leaves there the GPU then reads slowly (glibc
+    // uses non-temporal stores only from that size): the next op to read it
+    // ran at less than half speed, which on a mixture-of-experts model was
+    // every layer's expert multiplies (8.4 ms each against 3.8). The GPU's
+    // copy is also three times faster than the memcpy.
+    bool writes_pending = false;
+    void write(ggml_tensor * t, const void * src, size_t bytes) {
+        if (!t->buffer || ggml_backend_buffer_is_host(t->buffer)) {  // a result the CPU holds
+            ggml_backend_tensor_set(t, src, 0, bytes);
+            return;
+        }
+        ggml_backend_tensor_set_async(vk, t, src, 0, bytes);
+        writes_pending = true;
+    }
+    // Waits for those copies. The memory they read has to stay as it is until then.
+    void finish_writes() {
+        if (!writes_pending) return;
+        ggml_backend_synchronize(vk);
+        writes_pending = false;
     }
 
     // Block claiming's host memory: pinned buffers (xdna_pinned_mem), handed
@@ -434,6 +467,37 @@ static double xdna_copy_bytes(int64_t K, int64_t N) {
     return (double) ((N + 511) / 512 * 512) * (double) K / 8 * 9;
 }
 
+// Which kernel a weight's copy is for (ZEST_WEIGHTS):
+//   bfp16  (default) the BFP16 kernel, every copy 9 bits a weight
+//   quant  the kernel on quantized weights (xdna-npu.h): Q4_K at 4.75 bits a
+//          weight, unpacked on the NPU, other types copied through as
+//          BFP16; ~30% slower a GEMM (24 of the 32 cores multiply), but
+//          about half the memory for a Q4_K model
+// One kernel for the whole model: switching the NPU between the two costs
+// ~2.4 ms, and a mix chosen as the copies fill the limit gains nothing (by
+// the time BFP16 copies stop fitting, a quantized one doesn't fit either;
+// Qwen3.8-27B, 2026-11-18).
+enum class xdna_wmode { bfp16, quant };
+static xdna_wmode xdna_weights_mode() {
+    static const xdna_wmode m = [] {
+        const char * s = xdna_env("ZEST_WEIGHTS");
+        if (!s || !*s || !strcmp(s, "bfp16")) return xdna_wmode::bfp16;
+        if (!strcmp(s, "quant")) return xdna_wmode::quant;
+        GGML_LOG_WARN("xdna: ZEST_WEIGHTS=%s is not bfp16 or quant; using bfp16\n", s);
+        return xdna_wmode::bfp16;
+    }();
+    return m;
+}
+
+// A quantized-kernel copy's bytes, or negative when the weight can't have one.
+static double xdna_qcopy_bytes(const ggml_tensor * w) {
+#ifdef XDNA_HAVE_NPU
+    if (xdna_npu_has_qshape((int) w->type, w->ne[0], w->ne[1])) return xdna_npu_qcopy_bytes((int) w->type, w->ne[0], w->ne[1]);
+#endif
+    (void) w;
+    return -1;
+}
+
 // The layer a weight belongs to, from llama.cpp's names ("blk.12.attn_q.weight");
 // -1 for the others (the output matrix).
 static int xdna_layer_of(const ggml_tensor * w) {
@@ -454,11 +518,12 @@ static constexpr double GB = 1024.0 * 1024 * 1024;
 // The limit is the memory free when the first weight is asked about (the
 // model and its context are loaded by then), less what's kept back for
 // llama.cpp's work buffers and the rest of the machine: the larger of 4 GB and
-// a tenth of memory. It's also at most 20 GB: the NPU holds only so much (about
-// 25.9 GiB on the 88 GB test machine), and past that Windows moves its buffers
-// out and they come back damaged, silently (Qwen3.8-27B, 2026-10-03; the NPU's
-// results are checked for that too, xdna-npu.cpp). GGML_XDNA_MAX_COPY_GB sets
-// it instead.
+// a tenth of memory. On Windows it's also at most 20 GB: the NPU holds only so
+// much there (about 25.9 GiB on the 88 GB test machine), and past that Windows
+// moves its buffers out and they come back damaged, silently (Qwen3.8-27B,
+// 2026-10-03; the NPU's results are checked for that too, xdna-npu.cpp). Linux
+// has no such ceiling where we looked (Strix Halo, 2026-11-20), so there the
+// memory rule is the only limit. ZEST_MAX_COPY_GB sets it instead.
 //
 // supports_op is asked with no context, so there's one budget per process:
 // two contexts alive at once on the same model would each build the copies it
@@ -466,17 +531,25 @@ static constexpr double GB = 1024.0 * 1024 * 1024;
 struct xdna_budget {
     std::mutex mu;
     int contexts = 0;  // backends alive
+#ifdef _WIN32
     static constexpr double DEFAULT_MAX = 20 * GB;
+#else
+    static constexpr double DEFAULT_MAX = 0;  // none
+#endif
     bool started = false, cut = false, running = false, overridden = false, capped = false, locked = false;
     double limit = 0, free = 0, kept_back = 0, taken = 0;
-    struct entry { int layer; double bytes; };
+    struct entry {
+        int layer;
+        double bytes;  // of the copy it gets
+        bool quant;    // under the quantized kernel
+    };
     std::unordered_map<xdna_context::wkey, entry, xdna_context::wkey_hash> in, out;  // taken; left to the GPU
 
     // where the limit came from, for the log
     std::string source() const {
         char s[112];
         if (locked) snprintf(s, sizeof(s), "the locked-memory limit, less 2 GB for other NPU buffers; ulimit -l raises it");
-        else if (overridden) snprintf(s, sizeof(s), "set by GGML_XDNA_MAX_COPY_GB");
+        else if (overridden) snprintf(s, sizeof(s), "set by ZEST_MAX_COPY_GB");
         else if (capped) snprintf(s, sizeof(s), "the most by default; zest --memory-gb raises it");
         else snprintf(s, sizeof(s), "%.1f GB free, less %.1f GB kept back", free / GB, kept_back / GB);
         return s;
@@ -509,10 +582,11 @@ static bool xdna_budget_takes(const ggml_tensor * w) {
         const xdna_memory m = xdna_system_memory();
         b.free = m.available;
         b.kept_back = std::max(4 * GB, m.total / 10);
-        const char * s = xdna_env("GGML_XDNA_MAX_COPY_GB");
+        const char * s = xdna_env("ZEST_MAX_COPY_GB");
         b.overridden = s != nullptr;
-        b.capped = !s && b.free - b.kept_back > xdna_budget::DEFAULT_MAX;
-        b.limit = s ? atof(s) * GB : std::min(b.free - b.kept_back, xdna_budget::DEFAULT_MAX);
+        const double by_memory = b.free - b.kept_back;
+        b.capped = !s && xdna_budget::DEFAULT_MAX > 0 && by_memory > xdna_budget::DEFAULT_MAX;
+        b.limit = s ? atof(s) * GB : b.capped ? xdna_budget::DEFAULT_MAX : by_memory;
 #ifdef XDNA_HAVE_NPU
         const double lock = xdna_npu_lock_limit();
         if (lock >= 0 && lock - XDNA_LOCK_KEPT < b.limit) {
@@ -521,7 +595,8 @@ static bool xdna_budget_takes(const ggml_tensor * w) {
         }
 #endif
     }
-    const xdna_budget::entry e = { xdna_layer_of(w), xdna_copy_bytes(w->ne[0], w->ne[1]) };
+    const double qbytes = xdna_weights_mode() == xdna_wmode::quant ? xdna_qcopy_bytes(w) : -1;
+    const xdna_budget::entry e = { xdna_layer_of(w), qbytes >= 0 ? qbytes : xdna_copy_bytes(w->ne[0], w->ne[1]), qbytes >= 0 };
     if (!b.cut && b.taken + e.bytes <= b.limit) {
         b.in[key] = e;
         b.taken += e.bytes;
@@ -559,8 +634,24 @@ static void xdna_budget_report() {
     if (b.running) return;
     b.running = true;
     if (!b.started || b.cut) return;
-    GGML_LOG_INFO("xdna: NPU weight copies: %.1f GB for %zu weights (limit %.1f GB: %s)\n", b.taken / GB, b.in.size(),
-                  std::max(0.0, b.limit) / GB, b.source().c_str());
+    size_t quant = 0;
+    for (const auto & kv : b.in) quant += kv.second.quant;
+    GGML_LOG_INFO("xdna: NPU weight copies: %.1f GB for %zu weights, %zu under the quantized kernel (limit %.1f GB: %s)\n",
+                  b.taken / GB, b.in.size(), quant, std::max(0.0, b.limit) / GB, b.source().c_str());
+}
+
+// Whether a weight's copy goes under the quantized kernel: as the budget
+// decided, or, for a weight it never counted, as ZEST_WEIGHTS says
+// without a budget (quant: when it can).
+static bool xdna_weight_quant(const ggml_tensor * w) {
+    xdna_budget & b = g_budget;
+    {
+        std::lock_guard<std::mutex> lk(b.mu);
+        const xdna_context::wkey key = { w->buffer, w->data, (int) w->type, w->ne[0], w->ne[1] };
+        const auto it = b.in.find(key);
+        if (it != b.in.end()) return it->second.quant;
+    }
+    return xdna_weights_mode() == xdna_wmode::quant && xdna_qcopy_bytes(w) >= 0;
 }
 
 //
@@ -669,7 +760,7 @@ static bool xdna_mul_mat(xdna_context & ctx, ggml_tensor * node) {
 
 #ifdef XDNA_HAVE_NPU
     // On the NPU, for weights llama.cpp loaded (a weight buffer) in a built
-    // shape: its 8-bit copy is made the first time it's used.
+    // shape: its BFP16 copy is made the first time it's used.
     xdna_npu * npu = ctx.get_npu();
     if (npu && src0->buffer && ggml_backend_buffer_get_usage(src0->buffer) == GGML_BACKEND_BUFFER_USAGE_WEIGHTS &&
         xdna_npu_has_shape(src0->ne[0], src0->ne[1])) {
@@ -680,7 +771,7 @@ static bool xdna_mul_mat(xdna_context & ctx, ggml_tensor * node) {
             ctx.late_copies++;
             ctx.scratch_weight.resize(ggml_nbytes(src0));
             ctx.read(src0, ctx.scratch_weight.data());
-            ok = npu->add_weight(key, ctx.scratch_weight.data(), err);
+            ok = npu->add_weight(key, ctx.scratch_weight.data(), err, xdna_weight_quant(src0));
         }
         if (ok) ok = npu->mul_mat(key, (const float *) x, src1->ne[1], (float *) ctx.out.data(), err);
         if (ok) {
@@ -706,7 +797,8 @@ static bool xdna_mul_mat(xdna_context & ctx, ggml_tensor * node) {
     return true;
 }
 
-// A piece on the GPU after an NPU failure; inputs in host memory (rotary positions) move into Vulkan's for the call.
+// A piece on the GPU (after an NPU failure, or one with nothing for the NPU); inputs in host memory (rotary
+// positions) move into Vulkan's for the call.
 static bool xdna_gpu_compute(xdna_context & ctx, ggml_cgraph * g) {
     std::vector<ggml_tensor *> owners, views;
     std::unordered_set<ggml_tensor *> seen;
@@ -750,8 +842,158 @@ static bool xdna_gpu_compute(xdna_context & ctx, ggml_cgraph * g) {
         it->t->buffer = it->buffer;
         it->t->data = it->data;
     }
-    ctx.gpu_pieces++;
     return ok;
+}
+
+// The row split. The NPU takes ZEST_SPLIT percent of a piece's rows (in
+// whole 512s) and the GPU the rest of them at the same time, so both devices
+// multiply at once instead of taking turns. 0: the NPU takes whole pieces.
+// Unset, it follows the GPU (xdna_split_default).
+static bool xdna_trace();
+static int64_t xdna_split_percent() {
+    static const int64_t v = [] {
+        const char * gpu = xdna_vulkan().dev ? ggml_backend_dev_description(xdna_vulkan().dev) : nullptr;
+        const char * set = xdna_env("ZEST_SPLIT");
+        const int64_t p = xdna_split_choice(set, gpu);
+        if (xdna_trace()) {
+            const std::string what = p ? std::to_string(p) + "% of each piece's rows on the NPU, the rest on the GPU"
+                                       : std::string("off, the NPU takes whole pieces");
+            fprintf(stderr, "xdna split: %s (%s%s)\n", what.c_str(), set ? "ZEST_SPLIT" : "default for ",
+                    set ? "" : (gpu ? gpu : "an unknown GPU"));
+        }
+        return p;
+    }();
+    return v;
+}
+
+// An op that computes nothing: its result is its input's memory, seen another way.
+static bool xdna_is_view_op(ggml_op op) {
+    return op == GGML_OP_NONE || op == GGML_OP_RESHAPE || op == GGML_OP_VIEW || op == GGML_OP_PERMUTE || op == GGML_OP_TRANSPOSE;
+}
+
+// A piece's graph over rows [r0, r1) of its per-row tensors, for the GPU: the
+// same ops in the same order (the memory llama.cpp planned for the piece is
+// reused between its nodes in that order), each tensor a view of those rows of
+// the original's memory, so the GPU reads the piece's inputs and writes its
+// results in place.
+struct xdna_rows_graph {
+    ggml_context * ctx = nullptr;
+    ggml_cgraph * g = nullptr;
+    xdna_rows_graph() = default;
+    xdna_rows_graph(const xdna_rows_graph &) = delete;
+    ~xdna_rows_graph() { if (ctx) ggml_free(ctx); }
+};
+
+// False if the piece has something this doesn't split (then it isn't split;
+// `why` says what).
+static bool xdna_rows_view(xdna_context & ctx, const ggml_cgraph * g, int64_t T, int64_t r0, int64_t r1, xdna_rows_graph & out,
+                           std::string & why) {
+    const size_t max_tensors = (size_t) g->n_nodes * (1 + GGML_MAX_SRC) + 8;
+    ggml_init_params ip = { ggml_tensor_overhead() * max_tensors + ggml_graph_overhead_custom(max_tensors, false), nullptr, true };
+    out.ctx = ggml_init(ip);
+    if (!out.ctx) return false;
+    std::unordered_set<const ggml_tensor *> in_piece;
+    for (int i = 0; i < g->n_nodes; i++)
+        if (g->nodes[i]->op != GGML_OP_NONE) in_piece.insert(g->nodes[i]);
+    std::unordered_map<const ggml_tensor *, ggml_tensor *> view;
+    std::vector<std::pair<const ggml_tensor *, ggml_tensor *>> host_inputs;  // (original, its view) for inputs in host memory
+    bool ok = true;
+    // t's rows [r0, r1), along dimension d: one of the piece's ops with the
+    // same inputs' rows, or for an input from outside, a leaf
+    std::function<ggml_tensor *(const ggml_tensor *, int)> rows = [&](const ggml_tensor * t, int d) -> ggml_tensor * {
+        auto it = view.find(t);
+        if (it != view.end()) return it->second;
+        const bool node = in_piece.count(t) != 0;
+        // Rows along the last dimension in use, so a row range is one stretch
+        // of memory whatever the strides inside a row. An op that shares
+        // another tensor's memory (a reshape, a slice, an op done in place)
+        // shares the same rows of it.
+        if (t->ne[d] != T || (node && t->view_src && t->view_src->ne[xdna_exec_row_dim(t->view_src)] != T)) {
+            if (ok) why = std::string(ggml_op_name(t->op)) + " " + t->name + ": its rows don't run along its last dimension";
+            ok = false;
+            return nullptr;
+        }
+        int64_t ne[GGML_MAX_DIMS];
+        for (int i = 0; i < GGML_MAX_DIMS; i++) ne[i] = i == d ? r1 - r0 : t->ne[i];
+        ggml_tensor * v = ggml_new_tensor(out.ctx, t->type, GGML_MAX_DIMS, ne);
+        view[t] = v;
+        for (int i = 0; i <= d; i++) v->nb[i] = t->nb[i];  // the original's strides (a slice's are its source's)
+        for (int i = d + 1; i < GGML_MAX_DIMS; i++) v->nb[i] = v->nb[i - 1] * (size_t) v->ne[i - 1];
+        ggml_set_name(v, t->name);
+        v->buffer = t->buffer;
+        if (!node) {
+            // wherever it comes from, its memory holds it whole
+            if (t->buffer && ggml_backend_buffer_is_host(t->buffer)) host_inputs.push_back({ t, v });  // placed below
+            else v->data = (char *) t->data + r0 * (int64_t) t->nb[d];
+            return v;
+        }
+        v->op = t->op;
+        memcpy(v->op_params, t->op_params, sizeof(v->op_params));
+        v->flags = t->flags;
+        if (t->view_src) {
+            ggml_tensor * o = rows(t->view_src, xdna_exec_row_dim(t->view_src));
+            if (!o) return nullptr;
+            v->view_src = o;
+            v->view_offs = t->view_offs;
+            v->buffer = o->buffer;
+            v->data = (char *) o->data + t->view_offs;
+        } else {
+            v->data = (char *) t->data + r0 * (int64_t) t->nb[d];
+        }
+        for (int j = 0; j < GGML_MAX_SRC; j++) {
+            const ggml_tensor * s = t->src[j];
+            if (!s) continue;
+            const int sd = xdna_exec_row_dim(t, j);
+            if (sd < 0 && s->op != GGML_OP_NONE) {  // a weight or a parameter row is a leaf
+                if (ok) why = std::string(ggml_op_name(t->op)) + " " + t->name + ": a computed weight or parameter row";
+                ok = false;
+            }
+            v->src[j] = sd < 0 ? (ggml_tensor *) s : rows(s, sd);
+            if (!v->src[j] || !ok) return nullptr;
+        }
+        return v;
+    };
+    out.g = ggml_new_graph_custom(out.ctx, max_tensors, false);
+    for (int i = 0; i < g->n_nodes && ok; i++) {
+        const ggml_tensor * n = g->nodes[i];
+        // A reshape or a transpose computes nothing, and llama.cpp's
+        // scheduler leaves any that follow a piece's last op in the piece,
+        // whatever they are of (another layer's state, or a result of the
+        // piece turned for an op outside it). Only one that an op of the
+        // piece reads matters here, and that op brings it in.
+        if (xdna_is_view_op(n->op)) continue;
+        ggml_tensor * v = rows(n, xdna_exec_row_dim(n));
+        // one at a time, so the nodes keep the piece's order
+        if (v) ggml_build_forward_expand(out.g, v);
+    }
+    if (!ok) return false;
+    // inputs the CPU holds (rotary positions): their rows, copied into the GPU's memory
+    const xdna_vk & vk = xdna_vulkan();
+    const size_t align = ggml_backend_buft_get_alignment(vk.buft);
+    size_t need = 0;
+    for (const auto & h : host_inputs) need += GGML_PAD(ggml_nbytes(h.second), align);
+    if (need > ctx.gpu_in_size) {
+        if (ctx.gpu_in) ggml_backend_buffer_free(ctx.gpu_in);
+        ctx.gpu_in = ggml_backend_buft_alloc_buffer(vk.buft, need);
+        ctx.gpu_in_size = ctx.gpu_in ? need : 0;
+        if (!ctx.gpu_in) return false;
+    }
+    size_t off = 0;
+    for (const auto & h : host_inputs) {
+        ggml_tensor * v = h.second;
+        const int d = xdna_exec_row_dim(h.first);
+        v->buffer = ctx.gpu_in;
+        v->data = (char *) ggml_backend_buffer_get_base(ctx.gpu_in) + off;
+        ggml_backend_tensor_set(v, (const char *) h.first->data + r0 * (int64_t) h.first->nb[d], 0, ggml_nbytes(v));
+        off += GGML_PAD(ggml_nbytes(v), align);
+    }
+    // the piece's views of those inputs were made before their memory was known
+    for (auto & kv : view)
+        if (kv.second->view_src && kv.second->view_src->buffer == ctx.gpu_in) {
+            kv.second->buffer = ctx.gpu_in;
+            kv.second->data = (char *) kv.second->view_src->data + kv.second->view_offs;
+        }
+    return true;
 }
 
 static bool xdna_trace();
@@ -761,7 +1003,7 @@ static bool xdna_read_outside(const ggml_tensor * t, const std::unordered_set<co
 
 // How many streams block claiming splits a piece's rows into.
 static int xdna_streams() {
-    static int v = (int) env_int("GGML_XDNA_STREAMS", 2);
+    static int v = (int) env_int("ZEST_STREAMS", 2);
     return v;
 }
 
@@ -780,11 +1022,17 @@ static ggml_status ggml_backend_xdna_graph_compute(ggml_backend_t backend, ggml_
         ~timer() {
             c.compute_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
             c.pieces++;
-            if (!xdna_trace() || c.matmuls < 196) return;
+            // A single-projection benchmark needs the same breakdown as a
+            // full prompt, without waiting for 196 accumulated matmuls.
+            if (!xdna_trace() || (c.matmuls < 196 && !xdna_env("ZEST_TRACE_EVERY"))) return;
 #ifdef XDNA_HAVE_NPU
             const xdna_npu::times n = c.npu ? c.npu->take_times() : xdna_npu::times{};
 #else
-            const struct { double encode_ms = 0, npu_ms = 0, decode_ms = 0, pack_ms = 0; int calls = 0; } n;
+            const struct {
+                double encode_ms = 0, npu_ms = 0, decode_ms = 0, pack_ms = 0;
+                double weight_shape_ms = 0, weight_alloc_ms = 0, weight_encode_ms = 0, weight_upload_ms = 0;
+                int calls = 0;
+            } n;
 #endif
             fprintf(stderr,
                     "xdna times, %lld matmuls in %lld pieces: all %.1f ms | read inputs %.1f, encode %.1f, NPU %.1f "
@@ -796,23 +1044,42 @@ static ggml_status ggml_backend_xdna_graph_compute(ggml_backend_t backend, ggml_
             // passes, so there "encode" is only padding and copies, and
             // "decode" is 0
             fprintf(stderr, "xdna host passes: %.1f ms in %lld\n", xdna_pass_ms, (long long) xdna_passes);
+            fprintf(stderr, "xdna host pass worker CPU: decode %.1f, encode %.1f ms",
+                    xdna_decode_cpu_ns.exchange(0) / 1e6, xdna_encode_cpu_ns.exchange(0) / 1e6);
+            for (int op = 0; op < GGML_OP_COUNT; op++) {
+                const double ms = xdna_op_cpu_ns[op].exchange(0) / 1e6;
+                if (ms >= 1.0) fprintf(stderr, ", %s %.1f", ggml_op_name((ggml_op) op), ms);
+            }
+            fprintf(stderr, "\n");
             fprintf(stderr, "xdna weight copies: %lld built at load, %lld inside pieces; %.1f ms waiting for those "
                             "built at load\n",
                     (long long) c.built_at_load, (long long) c.late_copies, c.build_wait_ms);
+            fprintf(stderr, "xdna weight preparation: shapes %.1f, allocate %.1f, dequant+encode %.1f, sync %.1f ms\n",
+                    n.weight_shape_ms, n.weight_alloc_ms, n.weight_encode_ms, n.weight_upload_ms);
             if (c.gpu_pieces) fprintf(stderr, "xdna: %lld pieces on the GPU after the NPU failed\n", (long long) c.gpu_pieces);
+            if (c.bare_pieces) fprintf(stderr, "xdna: %lld pieces with no multiply, run by the GPU\n", (long long) c.bare_pieces);
+            if (c.split_pieces)
+                fprintf(stderr, "xdna split: %lld pieces shared with the GPU, %.1f ms handing it its rows, %.1f ms waiting for "
+                                "them after the NPU's\n",
+                        (long long) c.split_pieces, c.split_gpu_ms, c.split_wait_ms);
+            c.split_pieces = 0;
+            c.split_gpu_ms = c.split_wait_ms = 0;
             xdna_pass_ms = 0;
             xdna_passes = 0;
             c.build_wait_ms = 0;
             c.built_at_load = 0;
 #endif
             c.read_ms = c.write_ms = c.compute_ms = 0;
-            c.matmuls = c.pieces = c.late_copies = c.gpu_pieces = 0;
+            c.matmuls = c.pieces = c.late_copies = c.gpu_pieces = c.bare_pieces = 0;
         }
     } tm{ ctx, t_start };
 
 #ifdef XDNA_HAVE_NPU
     // after an NPU failure the GPU runs the rest of the prompt, which llama.cpp keeps sending here
-    if (g_npu_broken && xdna_gpu_compute(ctx, cgraph)) return GGML_STATUS_SUCCESS;
+    if (g_npu_broken && xdna_gpu_compute(ctx, cgraph)) {
+        ctx.gpu_pieces++;
+        return GGML_STATUS_SUCCESS;
+    }
 
     // Block claiming runs every matmul on the NPU. The policy only hands us
     // matmuls it can run, but a caller computing a graph directly (a test)
@@ -821,16 +1088,31 @@ static ggml_status ggml_backend_xdna_graph_compute(ggml_backend_t backend, ggml_
     // block: it runs here, on the GPU if the NPU has failed. So does one a
     // test hands over in host-only mode, which is how the host's small ops
     // are tested without an NPU.
-    bool npu_takes_all = true, small_ops = false;
+    bool npu_takes_all = true, small_ops = false, multiplies = false;
     for (int i = 0; i < cgraph->n_nodes; i++) {
         const ggml_tensor * n = cgraph->nodes[i];
         if (n->op != GGML_OP_MUL_MAT) {
             small_ops |= n->op != GGML_OP_NONE && n->op != GGML_OP_RESHAPE;
             continue;
         }
+        multiplies = true;
         const ggml_tensor * w = n->src[0];
         npu_takes_all &= w->buffer && ggml_backend_buffer_get_usage(w->buffer) == GGML_BACKEND_BUFFER_USAGE_WEIGHTS &&
                          xdna_npu_has_shape(w->ne[0], w->ne[1]);
+    }
+    // Small ops are claimed behind a multiply, but llama.cpp's scheduler can
+    // cut them off from it (an op we don't take falls between them in the
+    // graph's order). Such a piece has nothing for the NPU, and on the host
+    // it would cost a read and a write of every tensor for a few cheap ops:
+    // the GPU runs it where the tensors are.
+    if (xdna_blocks() && small_ops && !multiplies) {
+        bool gpu_takes = true;  // (an op only the host has stays here)
+        for (int i = 0; i < cgraph->n_nodes && gpu_takes; i++)
+            gpu_takes = ggml_backend_supports_op(ctx.vk, cgraph->nodes[i]);
+        if (gpu_takes && xdna_gpu_compute(ctx, cgraph)) {
+            ctx.bare_pieces++;
+            return GGML_STATUS_SUCCESS;
+        }
     }
     if ((xdna_blocks() && npu_takes_all) || small_ops) {
         xdna_npu * npu = npu_takes_all ? ctx.get_npu() : nullptr;
@@ -843,14 +1125,19 @@ static ggml_status ggml_backend_xdna_graph_compute(ggml_backend_t backend, ggml_
             return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
         };
         xdna_io io;
-        io.read = [&](const ggml_tensor * t, void * dst) {
+        io.read = [&](const ggml_tensor * t, void * dst, size_t bytes) {
             const auto t0 = std::chrono::steady_clock::now();
-            ctx.read(t, dst);
+            ctx.read(t, dst, bytes);
             ctx.read_ms += since(t0);
         };
-        io.write = [&](ggml_tensor * t, const void * src) {
+        io.write = [&](ggml_tensor * t, const void * src, size_t bytes) {
             const auto t0 = std::chrono::steady_clock::now();
-            ggml_backend_tensor_set(t, src, 0, ggml_nbytes(t));
+            ctx.write(t, src, bytes);
+            ctx.write_ms += since(t0);
+        };
+        const auto finish_writes = [&] {
+            const auto t0 = std::chrono::steady_clock::now();
+            ctx.finish_writes();
             ctx.write_ms += since(t0);
         };
         io.param = [&](const ggml_tensor * t) { return ctx.param(t); };
@@ -866,7 +1153,7 @@ static ggml_status ggml_backend_xdna_graph_compute(ggml_backend_t backend, ggml_
             ctx.late_copies++;
             ctx.scratch_weight.resize(ggml_nbytes(w));
             ctx.read(w, ctx.scratch_weight.data());
-            return npu->add_weight(key, ctx.scratch_weight.data(), err);
+            return npu->add_weight(key, ctx.scratch_weight.data(), err, xdna_weight_quant(w));
         };
         io.ensure_fused = [&](const ggml_tensor * gw, const ggml_tensor * uw, std::string & err) {
             for (const ggml_tensor * w : { gw, uw })
@@ -882,15 +1169,82 @@ static ggml_status ggml_backend_xdna_graph_compute(ggml_backend_t backend, ggml_
         io.weight_bytes = [&](const ggml_tensor * w) -> const void * { return ctx.weight(w).data(); };
         std::string err;
         bool ok = false;
-        if (npu) {
-            ok = xdna_exec_piece(cgraph, npu, npu->pool(), io, xdna_streams(), err);
-            ctx.pool_release();
-            if (!ok) xdna_npu_failed(err);
+        // The split (ZEST_SPLIT): the NPU's rows come first, the GPU
+        // runs the rest while the NPU works. The GPU's share reads and writes
+        // the tensors' own memory, so it runs only between the piece's reads
+        // and its writes.
+        int64_t T = 0, npu_rows = 0;
+        for (int i = 0; i < cgraph->n_nodes && !T; i++)
+            if (!xdna_is_view_op(cgraph->nodes[i]->op)) T = cgraph->nodes[i]->ne[xdna_exec_row_dim(cgraph->nodes[i])];
+        xdna_rows_graph gpu_rows;
+        std::thread gpu_thread;
+        bool gpu_started = false, gpu_ok = true;
+        double gpu_ms = 0;
+        if (npu && xdna_split_percent() > 0 && T >= 1024) {
+            npu_rows = std::min(T - 512, std::max<int64_t>(512, (T * xdna_split_percent() / 100 + 256) / 512 * 512));
+            std::string why;
+            if (!xdna_rows_view(ctx, cgraph, T, npu_rows, T, gpu_rows, why)) {
+                if (xdna_trace()) fprintf(stderr, "xdna split: a piece not shared (%s)\n", why.empty() ? "no memory" : why.c_str());
+                npu_rows = 0;
+            }
         }
-        // a failed piece wrote nothing back: the GPU runs it again, or the host if the GPU can't
-        if (!ok && g_npu_broken) ok = xdna_gpu_compute(ctx, cgraph);
+        if (npu_rows) {
+            io.inputs_read = [&] {
+                gpu_started = true;
+                gpu_thread = std::thread([&] {
+                    const auto t0 = std::chrono::steady_clock::now();
+                    gpu_ok = ggml_backend_graph_compute(ctx.vk, gpu_rows.g) == GGML_STATUS_SUCCESS;
+                    gpu_ms = since(t0);
+                });
+            };
+            io.before_write = [&](std::string & e) {
+                const auto t0 = std::chrono::steady_clock::now();
+                if (gpu_thread.joinable()) gpu_thread.join();
+                // Vulkan's compute may return with work still queued: wait for the rows themselves
+                ggml_backend_synchronize(ctx.vk);
+                ctx.split_wait_ms += since(t0);
+                ctx.split_gpu_ms += gpu_ms;
+                ctx.split_pieces++;
+                if (!gpu_ok) e = "the GPU's share of a piece failed";
+                return gpu_ok;
+            };
+        }
+        if (npu) {
+            ok = xdna_exec_piece(cgraph, npu, npu->pool(), io, xdna_streams(), err, npu_rows);
+            finish_writes();
+            ctx.pool_release();
+            if (gpu_thread.joinable()) {  // the NPU's side failed before its writes
+                gpu_thread.join();
+                ggml_backend_synchronize(ctx.vk);
+            }
+            if (!ok && gpu_ok) xdna_npu_failed(err);
+        }
+        io.inputs_read = nullptr;
+        io.before_write = nullptr;
+        if (!gpu_ok) {
+            GGML_LOG_ERROR("%s: %s\n", __func__, err.c_str());
+            return GGML_STATUS_FAILED;
+        }
+        // A failed piece wrote nothing back: the GPU runs it again, or the
+        // host if the GPU can't. After a split whose GPU share ran, the GPU
+        // has done its rows (in place, so they can't be run again): only the
+        // NPU's are left.
+        if (!gpu_started) npu_rows = 0;
+        if (!ok && g_npu_broken) {
+            if (npu_rows) {
+                xdna_rows_graph rest;
+                std::string why;
+                ok = xdna_rows_view(ctx, cgraph, T, 0, npu_rows, rest, why) &&
+                     ggml_backend_graph_compute(ctx.vk, rest.g) == GGML_STATUS_SUCCESS;
+                ctx.gpu_pieces++;
+            } else {
+                ok = xdna_gpu_compute(ctx, cgraph);
+                ctx.gpu_pieces++;
+            }
+        }
         if (!ok) {
-            ok = xdna_exec_piece(cgraph, nullptr, ctx.host_threads(), io, 1, err);
+            ok = xdna_exec_piece(cgraph, nullptr, ctx.host_threads(), io, 1, err, npu_rows);
+            finish_writes();
             ctx.pool_release();
         }
         if (!ok) {
@@ -927,14 +1281,13 @@ static ggml_status ggml_backend_xdna_graph_compute(ggml_backend_t backend, ggml_
 
 // llama.cpp shows each backend the pieces it plans for it: at load, when it
 // plans the first prompt, and again whenever a prompt's pieces change. The
-// first time a piece's weights appear, their NPU copies start building on a
-// thread of their own (xdna_context::queue_copies), so the first prompt
-// needn't wait for them. GGML_XDNA_COPY_AT_LOAD=0 leaves them to the first
+// first time a piece's weights appear, their NPU copies are built before the
+// load callback returns. ZEST_COPY_AT_LOAD=0 leaves them to the first
 // prompt.
 static void ggml_backend_xdna_graph_optimize(ggml_backend_t backend, ggml_cgraph * cgraph,
                                              ggml_backend_graph_optimize_params * params) {
 #ifdef XDNA_HAVE_NPU
-    static const bool at_load = env_int("GGML_XDNA_COPY_AT_LOAD", 1) != 0;
+    static const bool at_load = env_int("ZEST_COPY_AT_LOAD", 1) != 0;
     if (!at_load || !xdna_blocks()) return;
     xdna_context & ctx = *(xdna_context *) backend->context;
     std::unordered_set<const ggml_tensor *> in_piece;
@@ -958,6 +1311,7 @@ static void ggml_backend_xdna_graph_optimize(ggml_backend_t backend, ggml_cgraph
     std::vector<xdna_context::build_job> jobs;
     for (const auto & w : ws) jobs.push_back({ w.first, w.second });
     ctx.queue_copies(jobs);
+    ctx.finish_copies();
 #endif
     GGML_UNUSED(backend);
     GGML_UNUSED(cgraph);
@@ -1080,7 +1434,7 @@ static bool xdna_is_weight(const ggml_tensor * w) {
 // Readers from earlier graphs whose tensors ggml reused can linger; that only
 // ever adds a write, never skips one.
 static bool xdna_trace() {
-    static bool v = env_int("GGML_XDNA_TRACE", 0) != 0;
+    static bool v = env_int("ZEST_TRACE", 0) != 0;
     return v;
 }
 static std::mutex g_read_mu;
@@ -1098,7 +1452,7 @@ static void xdna_note_readers(const ggml_tensor * op) {
 // Whether something outside `in_piece` reads `t`, or might: a graph output, a
 // tensor never seen, or one with a reader elsewhere.
 static bool xdna_read_outside(const ggml_tensor * t, const std::unordered_set<const ggml_tensor *> & in_piece) {
-    static const bool all = env_int("GGML_XDNA_WRITE_ALL", 0) != 0;  // diagnostic: write every result back
+    static const bool all = env_int("ZEST_WRITE_ALL", 0) != 0;  // diagnostic: write every result back
     if (all || (t->flags & GGML_TENSOR_FLAG_OUTPUT)) return true;
     std::lock_guard<std::mutex> lk(g_read_mu);
     auto it = g_readers.find(t);
@@ -1129,9 +1483,9 @@ static void xdna_trace_piece(const ggml_cgraph * cgraph) {
 }
 
 // Block claiming: with the NPU configured, also take the small
-// ops next to our matmuls. GGML_XDNA_BLOCKS=0 claims matmuls only.
+// ops next to our matmuls. ZEST_BLOCKS=0 claims matmuls only.
 static bool xdna_blocks() {
-    static bool v = env_int("GGML_XDNA_BLOCKS", 1) != 0;
+    static bool v = env_int("ZEST_BLOCKS", 1) != 0;
 #ifdef XDNA_HAVE_NPU
     return v && xdna_run_mode() == xdna_mode::npu;
 #else
@@ -1196,11 +1550,11 @@ static bool xdna_supports_op_policy(const ggml_tensor * op, int depth) {
     if (op->op != GGML_OP_RESHAPE && xdna_tokens(op) < xdna_min_batch()) return false;
     if (!xdna_exec_supports(op)) return false;
     {
-        // GGML_XDNA_BLOCK_OPS: a comma list of the small ops block claiming
+        // ZEST_BLOCK_OPS: a comma list of the small ops block claiming
         // may take (ggml's op names, e.g. "ADD,RMS_NORM"), for tracking down
         // a wrong result op by op. Unset: all of them.
         static const std::string allow = [] {
-            const char * s = xdna_env("GGML_XDNA_BLOCK_OPS");
+            const char * s = xdna_env("ZEST_BLOCK_OPS");
             return s ? "," + std::string(s) + "," : std::string();
         }();
         if (!allow.empty() && allow.find("," + std::string(ggml_op_name(op->op)) + ",") == std::string::npos) return false;

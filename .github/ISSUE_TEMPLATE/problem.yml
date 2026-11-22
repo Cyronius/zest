@@ -25,7 +25,7 @@ body:
     id: versions
     attributes:
       label: Zest and llama.cpp versions
-      description: The Zest release or commit, and the llama.cpp build (for example, b10944)
+      description: The Zest release or commit, and the llama.cpp build (for example, b12109)
     validations:
       required: true
   - type: input
@@ -53,7 +53,7 @@ body:
     id: log
     attributes:
       label: Log
-      description: The whole output, run with `set GGML_XDNA_TRACE=1`
+      description: The whole output, run with `set ZEST_TRACE=1`
       render: text
     validations:
       required: true

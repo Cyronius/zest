@@ -575,9 +575,14 @@ void usage() {
         "  --memory-gb N   the most memory the NPU's copies of the weights may take, in GB\n"
         "                  (0.5 and the like work; 0 keeps the NPU out). Default: the\n"
         "                  memory free once the model is loaded, less 4 GB or a tenth of\n"
+#ifdef _WIN32
         "                  the machine's memory, whichever is larger, and at most 20 GB:\n"
         "                  past about 26 GB the NPU's copies can go bad. Layers that\n"
         "                  don't fit stay on the GPU.\n"
+#else
+        "                  the machine's memory, whichever is larger. Layers that don't\n"
+        "                  fit stay on the GPU.\n"
+#endif
         "  --min-chunk N   the smallest piece of a prompt, in tokens, the NPU takes.\n"
         "                  Default 1024; smaller pieces go to the GPU, which read them\n"
         "                  faster in our tests. 512 also uses the NPU with llama.cpp's\n"
@@ -674,11 +679,11 @@ int launch(const std::vector<std::string> & argv) {
     // and anything it starts (the router's per-model servers) inherit
     std::string set;
     if (!opt.memory_gb.empty()) {
-        set_env("GGML_XDNA_MAX_COPY_GB", opt.memory_gb);
+        set_env("ZEST_MAX_COPY_GB", opt.memory_gb);
         set += "; NPU weight copies limited to " + opt.memory_gb + " GB";
     }
     if (!opt.min_chunk.empty()) {
-        set_env("GGML_XDNA_MIN_BATCH", opt.min_chunk);
+        set_env("ZEST_MIN_BATCH", opt.min_chunk);
         set += "; NPU takes chunks of " + opt.min_chunk + " tokens or more";
     }
 

@@ -1,0 +1,196 @@
+{
+ "date": "2026-11-18",
+ "machine": "Ryzen AI MAX+ 395 / Radeon 8060S / XDNA2, 128 GB, Arch (Omarchy), Linux 7.2.15; power profile performance; machine quiet (load under 1, GPU idle before each run)",
+ "software": "llama.cpp b10944 Linux Vulkan release (libggml-vulkan.so sha256 c25c5ac2...869e06), Mesa 26.2.5 RADV, xrt 2.21.75, zest: the quantized-weight kernel in the backend (the commit after 69f90d1), with GGML_XDNA_WEIGHTS=auto as it then was",
+ "model": "Qwen3.8-27B Q4_K_M (17.66 GiB; sha256 c600de03...391a747)",
+ "method": "zest llama-bench -ngl 99 -n 0 -b 2048 -ub 2048, one configuration at a time; tokens/s is the median of the timed repetitions (3 unless noted), after llama-bench's warm-up prompt",
+ "prefill_tokens_s": [
+  {
+   "configuration": "GPU alone (-dev Vulkan0)",
+   "pp1024": 367.1,
+   "pp2048": 349.4,
+   "pp2769": 346.5,
+   "note": "second sitting 364.9 / - / 342.4; pp2048 x5: 346.7 (344.9-349.6)"
+  },
+  {
+   "configuration": "zest, GGML_XDNA_WEIGHTS=bfp16 (49 layers on the NPU)",
+   "pp1024": 301.4,
+   "pp2048": 298.0,
+   "pp2769": 309.7
+  },
+  {
+   "configuration": "zest, GGML_XDNA_WEIGHTS=auto (the default when measured; since removed)",
+   "pp1024": 301.0,
+   "pp2048": 297.8,
+   "pp2769": 308.4,
+   "note": "the same pieces, multiplies and calls as bfp16: no weight goes to the quantized kernel (see findings)"
+  },
+  {
+   "configuration": "zest, GGML_XDNA_WEIGHTS=quant (64 layers on the NPU)",
+   "pp1024": 168.8,
+   "pp2048": 217.1,
+   "pp2769": 239.4
+  },
+  {
+   "configuration": "zest, quant, quantized kernel rebuilt with the restructured multiply loop (GGML_XDNA_QKERNELS)",
+   "pp1024": 184.7,
+   "pp2048": 236.1,
+   "pp2769": 256.5
+  },
+  {
+   "configuration": "zest, bfp16, GGML_XDNA_MAX_COPY_GB=28 (64 layers on the NPU, 25.8 GB of copies)",
+   "pp2048": 294.0
+  },
+  {
+   "configuration": "artlite 28a3ed2 (2026-11-17), NPU only, artlite-bench --spec-type none",
+   "pp1024": 440.0,
+   "pp2048": 443.1,
+   "pp2769": 431.7
+  }
+ ],
+ "gpu_alone_by_ubatch_pp2048": {
+  "ub256": 388.0,
+  "ub512": 383.7,
+  "ub1024": 358.7,
+  "ub2048": 344.0
+ },
+ "chunk_of_2048_tokens_s": {
+  "method": "GGML_XDNA_TRACE=1 GGML_XDNA_TRACE_EVERY=1, per-piece lines summed per chunk; 'npu' is the time the host waited on the NPU (two streams overlap host work with it), 'outside' is the chunk less zest's pieces: the GPU's share and scheduling",
+  "gpu_alone": {
+   "all": 5.91
+  },
+  "zest_bfp16_49_layers": {
+   "all": 6.87,
+   "in_pieces": 4.58,
+   "npu": 3.17,
+   "host_passes": 0.78,
+   "write_results": 0.43,
+   "read_inputs": 0.16,
+   "outside": 2.29,
+   "multiplies": 380,
+   "npu_calls": 662
+  },
+  "zest_bfp16_64_layers": {
+   "all": 6.97,
+   "in_pieces": 5.81,
+   "npu": 4.14,
+   "host_passes": 0.96,
+   "write_results": 0.51,
+   "read_inputs": 0.17,
+   "outside": 1.16,
+   "multiplies": 496,
+   "npu_calls": 864
+  },
+  "zest_quant_64_layers": {
+   "all": 9.43,
+   "in_pieces": 8.17,
+   "npu": 6.16,
+   "host_passes": 0.92,
+   "write_results": 0.52,
+   "read_inputs": 0.2,
+   "encode": 0.36,
+   "outside": 1.26,
+   "multiplies": 496,
+   "npu_calls": 864
+  },
+  "zest_quant_64_layers_restructured_loop": {
+   "all": 8.67,
+   "in_pieces": 7.42,
+   "npu": 5.41
+  },
+  "host_pass_worker_cpu_s_bfp16_49_layers": {
+   "decode": 10.2,
+   "encode": 6.2,
+   "ADD": 1.7,
+   "MUL": 0.6,
+   "RMS_NORM": 0.5
+  },
+  "projection_flop": "the 64 layers' weight multiplies are 99.7 TFLOP a chunk (48.66 GFLOP a token; the feed-forward ones are 70%); the GPU alone spends about 4.7 s on them (5.91 less the 1.2 s left when zest takes them all): about 21 TFLOPS"
+ },
+ "npu_gemm": {
+  "bfp16_kernel_m1024": {
+   "method": "build/bench-npu-gemm, median of 10-20, the 27B's seven projection shapes",
+   "shipped_tflops": "20.3-21.0",
+   "shipped_dram_gb_s": "47.9-49.7",
+   "restructured_loop_tflops": "21.4-21.7",
+   "restructured_loop_dram_gb_s": "50.5-51.3"
+  },
+  "quantized_kernel_m1536_ms": {
+   "method": "24 multiplying cores, real Q4_K weights, 1536x17408x5120 and 1536x5120x17408, interleaved, best of 4 rounds of 5; x3 = the chunk's multiply repeated three times per chunk (timing build)",
+   "fp32_sums": {
+    "shipped": "15.5-15.7",
+    "restructured": "13.3-13.5",
+    "shipped_x3": 44.9,
+    "restructured_x3": 37.1
+   },
+   "bf16_sums": {
+    "shipped": "13.5-13.8",
+    "restructured": 13.3,
+    "shipped_x3": 38.7,
+    "restructured_x3": "24.3-24.4"
+   },
+   "restructured_vs_shipped": "outputs bit-identical (0 words differ) in fp32 and bf16 output modes",
+   "rows_sweep_ms": {
+    "shipped": {
+     "384": 3.96,
+     "768": 7.78,
+     "1152": 12.03,
+     "1536": 15.89
+    },
+    "restructured": {
+     "384": 3.43,
+     "768": 6.74,
+     "1152": 10.12,
+     "1536": 13.67
+    },
+    "note": "linear in rows: no fixed cost per call"
+   },
+   "unpack_repeated": {
+    "method": "restructured loop, bf16 sums; the unpacking core unpacks each tile 1, 2 and 3 times (timing build)",
+    "1536x17408x5120": [
+     13.73,
+     26.5,
+     39.26
+    ],
+    "1536x5120x17408": [
+     13.45,
+     26.23,
+     39.06
+    ],
+    "reading": "about 12.8 ms per unpack of the call's weights, and the GEMM takes one unpack plus under 1 ms: the unpacking core sets the pace (542 MB a call at 40.7 GB/s; the DRAM port carries about 57)"
+   }
+  },
+  "beside_the_gpu": {
+   "method": "bench-npu-gemm (BFP16 kernel, median of 150) looping while llama-bench -dev Vulkan0 pp2048 runs",
+   "npu_tflops": "18.2-18.4 (alone 20.3-21.0)",
+   "gpu_tokens_s": "329 with the NPU busy about two thirds of the time (344-345 once it stops)"
+  }
+ },
+ "correctness": {
+  "method": "llama-perplexity -c 512 -b 2048 -ub 2048 --chunks 8 over README.md + specs/xdna-backend/spec.md, against the GPU's logits; and 24 greedy tokens after a 500-character prompt (GGML_XDNA_MIN_BATCH=32)",
+  "gpu_against_itself": {
+   "mean_kld": -1.3e-05,
+   "same_top_pct": 100.0
+  },
+  "bfp16_52_layers": {
+   "mean_kld": 0.003445,
+   "max_kld": 0.251934,
+   "same_top_pct": 96.275
+  },
+  "quant_64_layers": {
+   "mean_kld": 0.004153,
+   "max_kld": 0.274636,
+   "same_top_pct": 95.931
+  },
+  "quant_64_layers_restructured_loop": "identical to quant to the last printed digit",
+  "bfp16_64_layers": "identical to quant to the last printed digit: the quantized kernel gives the BFP16 kernel's answers on the whole model",
+  "greedy_24_tokens": "bfp16 and quant both identical to the GPU's"
+ },
+ "findings": [
+  "auto (BFP16 copies until they stop fitting, then quantized) never used the quantized kernel on this model: BFP16 copies fill the limit first (49 layers at 20 GB, 62 at 25 GB), and from the layer that stops fitting even a quantized copy does not fit, so that layer and the rest go to the GPU. It ran exactly what bfp16 runs, and was removed; bfp16 is the default.",
+  "More layers on the NPU do not help while the devices take turns: 64 layers under BFP16 (294) against 49 (298).",
+  "quant pads rows: each of a piece's two streams rounds up to a multiple of 384, so 1,024 tokens run as 1,536 rows and 2,048 as 2,304.",
+  "The restructured multiply loop (since applied to mm_bfp_acc.cc and both shipped kernels, whose KL figures on the 27B are unchanged to the last printed digit) is worth 16% on the quantized kernel and 3% on the BFP16 kernel, which stays at the DRAM limit. With bf16 sums as well the multiply alone falls to about 8 ms per 1,536 rows, but the GEMM stays at 13.3 ms: the unpacking core holds it (unpack_repeated).",
+  "ctest's mul-mat-npu-quant passed when the quantized kernel could not run (pointed at the BFP16 xclbin, the NPU failed and the GPU finished the test). Fixed with this record: the test fails on an NPU failure that was not injected."
+ ]
+}

@@ -29,7 +29,7 @@
       type="font/woff2"
       crossorigin
     />
-    <link rel="stylesheet" href="style.css?v=20261022-3" />
+    <link rel="stylesheet" href="style.css?v=20261120-1" />
     <script src="site.js?v=20261022-2" defer></script>
   </head>
   <body>
@@ -69,7 +69,7 @@
             <div class="actions">
               <a
                 class="button primary"
-                href="https://github.com/Cyronius/zest/releases/download/v0.2.0/zest-v0.2.0-llama-b10944-win-x64.zip"
+                href="https://github.com/Cyronius/zest/releases/download/v0.3.0/zest-v0.3.0-llama-b12109-win-x64.zip"
                 ><svg viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M12 3v12m-5-5 5 5 5-5M4 15v5h16v-5" /></svg
                 >Download Windows preview</a
@@ -120,7 +120,7 @@
         </div>
         <p class="preview-note">
           Zest is an independent community add-on. Windows 11 preview, tested on
-          Strix Point with Lemonade 2026.43.3.
+          Strix Point with Lemonade 2026.47.1.
         </p>
       </section>
 
@@ -185,20 +185,34 @@
               </div></div>
               <p class="chart-note">Prompt processing time. Lower is faster.</p></div></div>
           <div class="result-context"><p>Qwen3.8-27B UD-IQ3_S · one aligned 2,048-token prompt chunk · Ryzen AI 9 HX PRO 370 / Radeon 890M (Strix Point).<br />
-            About 47% less prefill time in this test. Three warm pairs on one Windows laptop; background load and thermals weren't controlled.
+            About 47% less prefill time in this test, measured 2026-10-21 with the build behind the Windows preview. Three warm pairs on one Windows laptop; background load and thermals weren't controlled.
             Model load and weight conversion are excluded. This does not show a decode benefit or compare with Lemonade's current default backends.</p>
             <a class="text-link" href="https://github.com/Cyronius/zest/blob/main/docs/model-comparison.md">Read the test report</a></div>
           <div class="model-results"><h3>More models through Lemonade</h3>
-            <p>The same long prose request across five models, measured on the same Strix Point laptop. Speedups vary by model and prompt.</p>
+            <p>The same long prose request, measured on the same Strix Point laptop on 2026-11-21 with the v0.3.0 add-on on the earlier llama.cpp b10944. v0.3.0 itself ships b12109, which we've checked with one model so far. The row split is off, as it now is by default on this laptop. Speedups vary by model and prompt.</p>
             <div class="model-table-scroll" role="region" aria-label="Model comparison; scroll horizontally on small screens" tabindex="0"><table>
               <caption>Prompt processing, tokens/s · 3 warm paired runs per model · median speedup with range</caption>
               <thead><tr><th scope="col">Model / GGUF</th><th scope="col">GPU</th><th scope="col">NPU + GPU</th><th scope="col">Speedup</th></tr></thead><tbody>
-              <tr><th scope="row">Qwen3.8-27B<small>UD-IQ3_S · 2,769 prompt tokens</small></th><td>50</td><td>74</td><td><strong>1.54×</strong><small>1.47–1.55×</small></td></tr>
-              <tr><th scope="row">LFM2.5-2.6B<small>Q8_0 · 2,823 prompt tokens</small></th><td>772</td><td>1,190</td><td><strong>1.54×</strong><small>1.11–1.57×</small></td></tr>
-              <tr><th scope="row">Qwen3-4B<small>Q4_K_M · 2,785 prompt tokens</small></th><td>415</td><td>597</td><td><strong>1.46×</strong><small>1.44–1.60×</small></td></tr>
-              <tr><th scope="row">LFM2.5-1.2B-Instruct<small>Q8_0 · 2,846 prompt tokens</small></th><td>1,769</td><td>2,600</td><td><strong>1.46×</strong><small>1.44–1.48×</small></td></tr>
-              <tr><th scope="row">LFM2.5-350M<small>Q8_0 · 2,846 prompt tokens</small></th><td>5,338</td><td>5,897</td><td><strong>1.14×</strong><small>1.05–1.15×</small></td></tr>
+              <tr><th scope="row">LFM2.5-2.6B<small>Q8_0 · 2,823 prompt tokens</small></th><td>879</td><td>1,391</td><td><strong>1.58×</strong><small>1.52–1.60×</small></td></tr>
+              <tr><th scope="row">LFM2.5-1.2B-Instruct<small>Q8_0 · 2,846 prompt tokens</small></th><td>1,853</td><td>2,886</td><td><strong>1.55×</strong><small>1.46–1.56×</small></td></tr>
+              <tr><th scope="row">Qwen3-4B<small>Q4_K_M · 2,785 prompt tokens</small></th><td>454</td><td>673</td><td><strong>1.48×</strong><small>1.48–1.51×</small></td></tr>
               </tbody></table></div>
+            <p>With the split on, the same build managed 1.24–1.31×, which is why it's off here. Qwen3.8-27B (1.54×) and LFM2.5-350M (1.14×) haven't been remeasured yet; their October figures are in the
+              <a class="text-link" href="https://github.com/Cyronius/zest/blob/main/docs/model-comparison.md">test report</a>.</p>
+          </div>
+          <div class="model-results"><h3>On Strix Halo, with llama.cpp directly</h3>
+            <p>Ryzen AI MAX+ 395 with Radeon 8060S on Linux. This GPU is about as fast as the NPU at the work Zest moves, so Zest runs both at once: each takes half of every large prompt chunk. (On Strix Point's smaller GPU that was slower, so it's off there.) Measured with the v0.3.0 add-on on the earlier llama.cpp b10944. Two mixture-of-experts models we tried came out 4–5% slower; the full table has them.</p>
+            <div class="model-table-scroll" role="region" aria-label="Strix Halo model comparison; scroll horizontally on small screens" tabindex="0"><table>
+              <caption>Prompt processing, tokens/s · one 2,048-token prompt · 5 to 9 paired rounds per model · median speedup with range</caption>
+              <thead><tr><th scope="col">Model / GGUF</th><th scope="col">GPU</th><th scope="col">NPU + GPU</th><th scope="col">Speedup</th></tr></thead><tbody>
+              <tr><th scope="row">LFM2.5-2.6B<small>Q8_0</small></th><td>2,983</td><td>4,647</td><td><strong>1.56×</strong><small>1.55–1.56×</small></td></tr>
+              <tr><th scope="row">LFM2.5-1.2B-Instruct<small>Q8_0</small></th><td>6,514</td><td>9,958</td><td><strong>1.53×</strong><small>1.49–1.55×</small></td></tr>
+              <tr><th scope="row">Qwen3.8-27B<small>Q4_K_M</small></th><td>343</td><td>492</td><td><strong>1.44×</strong><small>1.43–1.44×</small></td></tr>
+              <tr><th scope="row">Qwen3-4B<small>Q4_K_M</small></th><td>1,859</td><td>2,593</td><td><strong>1.40×</strong><small>1.39–1.40×</small></td></tr>
+              <tr><th scope="row">Qwen3.8-27B<small>UD-IQ3_S</small></th><td>352</td><td>487</td><td><strong>1.38×</strong><small>1.38–1.38×</small></td></tr>
+              <tr><th scope="row">LFM2.5-350M<small>Q8_0</small></th><td>18,602</td><td>23,430</td><td><strong>1.26×</strong><small>1.24–1.28×</small></td></tr>
+              </tbody></table></div>
+            <p><a class="text-link" href="https://github.com/Cyronius/zest/blob/main/docs/technical-guide.md#results">Method, all ten models, and accuracy</a></p>
           </div>
         </div>
       </section>
@@ -211,7 +225,7 @@
         <div class="section-intro">
           <h2 id="setup-title">Try it on your laptop</h2>
           <p>
-            You'll need Windows 11, Lemonade 2026.43.3, a local GGUF file,
+            You'll need Windows 11, Lemonade 2026.47.1, a local GGUF file,
             a Ryzen AI NPU with its AMD driver, and a Vulkan GPU driver. The
             preview includes the matching backend.
           </p>
@@ -228,7 +242,7 @@
             </div>
             <a
               class="text-link"
-              href="https://github.com/Cyronius/zest/releases/tag/v0.2.0"
+              href="https://github.com/Cyronius/zest/releases/tag/v0.3.0"
               >Windows preview
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M4 12h16m-6-6 6 6-6 6" /></svg
@@ -266,7 +280,7 @@
         </ol>
         <p class="setup-links">
           <a
-            href="https://github.com/lemonade-sdk/lemonade/releases/tag/v2026.43.3"
+            href="https://github.com/lemonade-sdk/lemonade/releases/tag/v2026.47.1"
             >Get the tested Lemonade version</a
           ><span>·</span
           ><a
@@ -284,14 +298,15 @@
           <h3>What we've tested so far</h3>
           <div class="compat-columns">
             <p>
-              Windows 11, Ryzen AI 9 HX PRO 370, Radeon 890M, and Lemonade
-              2026.43.3. The actual desktop app and local API both ran
-              NPU-assisted prompts.
+              Windows 11, Ryzen AI 9 HX PRO 370, Radeon 890M. v0.3.0 ran
+              NPU-assisted prompts through Lemonade 2026.47.1's local API. The
+              desktop app was last checked with v0.2.0 and Lemonade 2026.43.3.
             </p>
             <p>
-              This preview uses the bundled b10944 backend. Speed depends on
-              your model, and converted weights use extra RAM. Linux NPU
-              hardware and Strix Halo haven't been verified by this project.
+              This release uses llama.cpp b12109, the build Lemonade 2026.47.1 bundles. Speed depends on
+              your model, and converted weights use extra RAM. On Strix Halo
+              under Linux we've measured direct llama.cpp use; Lemonade on
+              Linux hasn't been verified by this project.
             </p>
           </div>
         </div>
@@ -303,7 +318,7 @@
               The Qwen, LFM, and Granite models in our tests are examples,
               rather than a fixed model list. You don't need an ONNX or Q4NX
               export, or a separately compiled NPU kernel for each model.
-              Your GGUF must work with the bundled b10944 build; the add-on's
+              Your GGUF must work with the bundled b12109 build; the add-on's
               operation coverage, available memory, and hardware also matter.
               Some models get little benefit or run faster on the GPU alone.
               See the
@@ -328,6 +343,20 @@
               preparing the NPU's weight copies. Lemonade's GPU recipe label
               doesn't tell you whether the add-on ran; check the NPU call counts
               in the server log.
+            </p>
+          </details>
+          <details>
+            <summary>Does the GPU share the NPU's work?</summary>
+            <p>
+              On Strix Halo, yes: its large GPU takes half of every big prompt
+              chunk while the NPU does the other half. On Strix Point and other
+              Radeon 800M laptops this split is turned off by default, because
+              it was slower there: the smaller GPU finishes its half after the
+              NPU, and the NPU waits. With the split off, the NPU takes whole
+              chunks. To try it anyway, set the environment variable
+              <code>ZEST_SPLIT=on</code> before starting the server. The
+              <a href="https://github.com/Cyronius/zest/blob/main/docs/technical-guide.md#settings">settings list</a>
+              has every option.
             </p>
           </details>
           <details>

@@ -3,8 +3,8 @@
 set -euo pipefail
 
 version=${1:?usage: tools/package.sh <version>}
-tag=b10944
-archive_sha256=de48f1c0890365d432dea3db1d8e9482686748fe5821f211719779e5724bdc7b
+tag=b12109
+archive_sha256=b5665ff7aaaf87139c3be7dfe417b39a187b97825a626b7cf554b45e4392aa6e
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 build=${BUILD:-$root/build}
 out=${OUT:-$root/dist}
@@ -26,8 +26,8 @@ for f in libggml-zest.so libggml-zest-xrt.so zest npu; do
     [[ -f "$build/$f" ]] || { echo "no $f in $build; build first" >&2; exit 1; }
     cp "$build/$f" "$stage/"
 done
-cp "$root/kernels/bfp16_gemm/prebuilt/bfp16_gemm.xclbin" "$stage/"
-cp "$root/tools/bench.ps1" "$stage/"
+cp "$root/kernels/bfp16_gemm/prebuilt/bfp16_gemm.xclbin" "$root/kernels/bfp16_gemm/prebuilt/bfpq_gemm.xclbin" "$stage/"
+cp "$root/tools/bench.ps1" "$root/tools/bench.py" "$stage/"
 mkdir -p "$stage/tools" "$stage/docs" "$stage/tests/prompts"
 cp "$root/tools/bench-lemonade.ps1" "$stage/tools/"
 cp "$root/tools/check-lemonade.py" "$stage/tools/"

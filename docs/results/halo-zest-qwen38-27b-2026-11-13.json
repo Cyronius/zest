@@ -1,0 +1,151 @@
+{
+  "machine": "Ryzen AI MAX+ 395 / Radeon 8060S / XDNA2, Linux",
+  "server": "Lemonade 2026.43.3 / llama.cpp b10944 / Zest",
+  "model": "Qwen3.8-27B UD-IQ3_S",
+  "prompt_tokens": 2769,
+  "gguf_tensor_parameters": {
+    "total": 27320697856,
+    "IQ3_S": 8650752000,
+    "IQ4_XS": 4886364160,
+    "IQ3_XXS": 4865392640,
+    "Q3_K": 2204631040,
+    "IQ2_S": 1814036480
+  },
+  "method": "One warm GPU-only and NPU-assisted pair per configuration; Dibs CLEAN before and after each pair; zero cached prompt tokens",
+  "runs": [
+    {
+      "configuration": "Original 20 GiB BFP16 copy limit, asynchronous load preparation",
+      "gpu_prompt_tokens_s": 277.03,
+      "npu_prompt_tokens_s": 228.55,
+      "npu_load_s": 2.83,
+      "npu_first_request_s": 86.69
+    },
+    {
+      "configuration": "30 GiB BFP16 copy limit, all layers on NPU",
+      "gpu_prompt_tokens_s": 278.82,
+      "npu_prompt_tokens_s": 221.13,
+      "npu_load_s": 2.83,
+      "npu_first_request_s": 108.50
+    },
+    {
+      "configuration": "20 GiB limit, load waits for original weight preparation",
+      "gpu_prompt_tokens_s": 278.25,
+      "npu_prompt_tokens_s": 229.17,
+      "npu_load_s": 76.44,
+      "npu_first_request_s": 13.19
+    },
+    {
+      "configuration": "20 GiB limit, direct GGUF row dequantization into mapped NPU buffer during load",
+      "gpu_prompt_tokens_s": 277.88,
+      "npu_prompt_tokens_s": 227.32,
+      "npu_load_s": 13.28,
+      "npu_first_request_s": 13.14
+    },
+    {
+      "configuration": "Direct packing plus 34,816-column fused gate/up NPU shape, tracing disabled",
+      "gpu_prompt_tokens_s": 278.42,
+      "npu_prompt_tokens_s": 230.59,
+      "npu_load_s": 13.40,
+      "npu_first_request_s": 13.08
+    },
+    {
+      "configuration": "Fused NPU path, one stream instead of two",
+      "gpu_prompt_tokens_s": 277.78,
+      "npu_prompt_tokens_s": 232.98,
+      "npu_load_s": 13.42,
+      "npu_first_request_s": 13.09
+    },
+    {
+      "configuration": "Fused NPU path, large FFN matmuls only (minimum 200,000 MFLOP)",
+      "gpu_prompt_tokens_s": 278.11,
+      "npu_prompt_tokens_s": 241.28,
+      "npu_load_s": 13.58,
+      "npu_first_request_s": 12.78
+    }
+  ],
+  "diagnostics": [
+    {
+      "configuration": "Same Zest-claimed graph pieces forced to run on Vulkan after first NPU call fails; no NPU work",
+      "gpu_prompt_tokens_s": 278.49,
+      "forced_gpu_fallback_prompt_tokens_s": 261.60
+    },
+    {
+      "configuration": "NPU matmuls only, surrounding operations on Vulkan",
+      "gpu_prompt_tokens_s": 277.94,
+      "npu_prompt_tokens_s": 193.59
+    },
+    {
+      "configuration": "Experimental concurrent GPU/NPU token-row split, roughly half the rows each; removed after this test",
+      "gpu_prompt_tokens_s": 277.41,
+      "npu_prompt_tokens_s": 222.08
+    },
+    {
+      "configuration": "Experimental concurrent GPU/NPU token-row split, roughly three quarters on GPU; removed after this test",
+      "gpu_prompt_tokens_s": 277.55,
+      "npu_prompt_tokens_s": 230.63
+    },
+    {
+      "configuration": "Sixteen NPU host workers instead of default hardware concurrency",
+      "gpu_prompt_tokens_s": 278.48,
+      "npu_prompt_tokens_s": 221.26
+    },
+    {
+      "configuration": "Only FFN down projections on NPU",
+      "gpu_prompt_tokens_s": 277.46,
+      "npu_prompt_tokens_s": 245.37
+    },
+    {
+      "configuration": "Only FFN gate/up projections on NPU",
+      "gpu_prompt_tokens_s": 277.56,
+      "npu_prompt_tokens_s": 248.35
+    },
+    {
+      "configuration": "Only attention projections on NPU",
+      "gpu_prompt_tokens_s": 278.66,
+      "npu_prompt_tokens_s": 231.45
+    },
+    {
+      "configuration": "Experimental shared activation BO for grouped NPU projections; removed after no measurable benefit",
+      "gpu_prompt_tokens_s": 299.27,
+      "npu_prompt_tokens_s": 255.42
+    },
+    {
+      "configuration": "Control with duplicate activation BOs, same binary and quiet machine",
+      "gpu_prompt_tokens_s": 299.60,
+      "npu_prompt_tokens_s": 255.43
+    },
+    {
+      "configuration": "Eight-row contiguous activation writes and AVX-512 paired BFP encoding; clean warm Lemonade pair under a later clock regime",
+      "gpu_prompt_tokens_s": 257.8567,
+      "npu_prompt_tokens_s": 232.7972,
+      "gpu_prompt_ms": 10738.522,
+      "npu_prompt_ms": 11894.474,
+      "paired_npu_to_gpu_ratio": 0.902816,
+      "conclusion": "NPU assist remained slower; changed clocks prevent a speedup claim against earlier absolute rates"
+    }
+  ],
+  "hybrid_projection_probe": {
+    "tensor": "blk.2.ffn_down.weight",
+    "type": "IQ3_S",
+    "shape": "K=17408, N=5120, M=1024",
+    "method": "Real GGUF rows, concurrent separate Vulkan and XDNA backend calls, eight repetitions, Dibs CLEAN before and after; NRMSE versus full GPU below 0.014",
+    "gpu_full_ms": 8.4,
+    "splits": [
+      { "gpu_columns": 4096, "npu_columns": 1024, "overlap_ms": 13.029 },
+      { "gpu_columns": 2560, "npu_columns": 2560, "overlap_ms": 12.988 },
+      { "gpu_columns": 1536, "npu_columns": 3584, "overlap_ms": 14.769 }
+    ],
+    "profile": "Warm NPU partial calls: roughly 5-6 ms in host passes and 1.3-1.5 ms in NPU submissions and waits",
+    "conclusion": "A simple output-column split through the existing host-staged backends loses to GPU alone"
+  },
+  "iq3s_npu_decoder_prototype": {
+    "scope": "One AIE2P core decodes 64 rows x one 256-value IQ3_S GGUF superblock into 18,432 BFP16 bytes; standalone kernel, not connected to inference",
+    "reference": "blk.2.ffn_down.weight; all 18,432 bytes matched an independent GGUF/BFP oracle",
+    "method": "1,000 kernel submissions and waits, Dibs CLEAN before and after each run",
+    "scalar_float_ms_per_tile": 2.423,
+    "integer_output_order_ms_per_tile": 0.670,
+    "integer_row_local_ms_per_tile": 0.659,
+    "integer_shared_fields_ms_per_tile": 0.559,
+    "conclusion": "Correct, but too slow for execution-time dequantization across the model; requires vectorized decoding and integration with GEMM"
+  }
+}

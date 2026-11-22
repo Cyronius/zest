@@ -1,12 +1,12 @@
 # Technical guide: direct llama.cpp, Linux, and backend details
 
 Zest's `ggml-zest` backend is an add-on for llama.cpp that reads prompts on the NPU of an
-AMD Ryzen AI 300 laptop, next to the integrated GPU. It loads into an
+AMD Ryzen AI processor, together with the integrated GPU. It loads into an
 unmodified llama.cpp build for Windows or Linux. The GPU keeps doing
 everything else, including writing the reply.
 
-Linux is new and hasn't been run on an NPU by us yet; see
-[Linux](#linux).
+It runs on Windows and on Linux. The Linux figures here are from a Strix
+Halo machine; see [Linux](#linux).
 
 [Back to the Lemonade quick start](../README.md). This guide covers direct
 llama.cpp use, building, architecture, tuning, and standalone measurements.
@@ -14,28 +14,27 @@ llama.cpp use, building, architecture, tuning, and standalone measurements.
 ## Requirements
 
 - Windows 11, or Linux (see [Linux](#linux) for what it needs there)
-- A Ryzen AI processor with an NPU. Only tested on Strix Point: the Ryzen AI
-  9 HX 370 with Radeon 890M graphics. At start the add-on runs a small test
+- A Ryzen AI processor with an NPU. Tested on Strix Point (Ryzen AI 9 HX 370
+  with Radeon 890M) and Strix Halo (Ryzen AI MAX+ 395 with Radeon 8060S).
+  At start the add-on runs a small test
   multiply on the NPU and turns on only if it gets it right, so it decides
   by what the NPU does, not by the chip's name (see
-  [Troubleshooting](#troubleshooting) if it turns itself off). Strix Halo
-  (Ryzen AI Max) and Krackan Point (Ryzen AI 7 350, Ryzen AI 5 340) have the
-  same NPU as Strix Point and should pass, but nobody has run it on one
-  yet. Strix Halo's GPU is much bigger, so there the GPU may be faster on
-  its own.
+  [Troubleshooting](#troubleshooting) if it turns itself off). Krackan Point
+  (Ryzen AI 7 350, Ryzen AI 5 340) has not been tested.
+  [Results](#results) has both machines' figures.
 - The AMD NPU driver. Tested with 32.0.20102.3930.
 - A GPU driver with Vulkan. Tested with Radeon driver 32.0.31041.1004.
-- llama.cpp release **b10944**, Vulkan build
-  (`llama-b10944-bin-win-vulkan-x64.zip`, or
-  `llama-b10944-bin-ubuntu-vulkan-x64.tar.gz` on Linux). The add-on is
+- llama.cpp release **b12109**, Vulkan build
+  (`llama-b12109-bin-win-vulkan-x64.zip`, or
+  `llama-b12109-bin-ubuntu-vulkan-x64.tar.gz` on Linux). The add-on is
   built against that release and must run with it.
 
 ## Quick start
 
-Download `zest-<version>-llama-b10944-win-x64.zip` from the
+Download `zest-<version>-llama-b12109-win-x64.zip` from the
 [releases page](https://github.com/Cyronius/zest/releases) and unzip it
 into a folder of its own. It's llama.cpp's own Windows Vulkan release
-(b10944), unmodified, with the add-on (`ggml-zest.dll`), its NPU kernel
+(b12109), unmodified, with the add-on (`ggml-zest.dll`), its NPU kernel
 (`bfp16_gemm.xclbin`) and the launcher (`zest.exe`) next to it.
 
 The zip isn't signed, so Windows may warn the first time you run something
@@ -101,7 +100,7 @@ zest --memory-gb 20 llama-server -m model.gguf
 `--memory-gb` is the most memory the NPU's copies of the weights may take,
 in GB (`0.5` works; `0` keeps the NPU out). Without it, the limit is the
 memory free once the model is loaded, less 4 GB or a tenth of the machine's
-memory, whichever is larger, and at most 20 GB (see Limitations). Layers
+memory, whichever is larger, and on Windows at most 20 GB (see Limitations). Layers
 that don't fit stay on the GPU.
 
 `--min-chunk` is the smallest piece of a prompt, in tokens, the NPU takes.
@@ -115,14 +114,14 @@ default 512-token chunks on the NPU too.
 the NPU yourself:
 
 ```
-set GGML_BACKEND_PATH=C:\path\to\llama-b10944\ggml-zest.dll
+set GGML_BACKEND_PATH=C:\path\to\llama-b12109\ggml-zest.dll
 llama-server -m model.gguf -dev XDNA0,Vulkan0 -ts 0,1
 ```
 
 Without `-dev XDNA0,...`, llama.cpp runs as if the add-on weren't there.
 
 **With Lemonade:** a verified Windows setup uses Lemonade's custom backend
-setting to run this same b10944 build. See [the Lemonade guide](lemonade.md)
+setting to run this same b12109 build. See [the Lemonade guide](lemonade.md)
 for setup, NPU execution checks and a paired API benchmark.
 
 `-ts 0,1` keeps every layer on the GPU, which is where llama.cpp puts them
@@ -134,13 +133,16 @@ already set by user, abort`. It still fits the context size.
 
 ## Linux
 
-Linux support is new. It builds and passes every test that needs no NPU,
-on our machines and in CI, but we haven't run it on an NPU ourselves yet.
-Nulifyer ran an earlier Linux port of this add-on on a Ryzen AI 9 HX 370
-under Ubuntu 24.04 and 26.04: the NPU tests passed, and prompts read faster
-than on the GPU alone
+We run it on a Strix Halo machine (Ryzen AI MAX+ 395, Radeon 8060S, 128 GB)
+under Arch Linux: kernel 7.2 with its own `amdxdna` driver, XRT 2.21.75 and
+Mesa 26.2. Every test passes there, the NPU ones included, and the Strix
+Halo figures under [Results](#results) and [Accuracy](#accuracy) were
+measured on it. Strix Point under Linux we haven't run ourselves. Nulifyer
+ran an earlier Linux port of this add-on on a Ryzen AI 9 HX 370 under Ubuntu
+24.04 and 26.04: the NPU tests passed, and prompts read faster than on the
+GPU alone
 ([their notes](https://github.com/Nulifyer/llama-xdna-hybrid/blob/main/docs/Linux.md)).
-Treat it as experimental until this section says otherwise.
+CI builds the Linux add-on and runs the tests that need no NPU.
 
 **What it needs:**
 
@@ -152,7 +154,8 @@ Treat it as experimental until this section says otherwise.
   - Ubuntu 24.04 and 25.10: the same package from the lemonade PPA:
     `sudo add-apt-repository ppa:lemonade-team/stable`, then
     `sudo apt install libxrt-npu2 amdxdna-dkms`
-  - Arch: `xrt` and `xrt-plugin-amdxdna`, and `amdxdna-dkms` from the AUR
+  - Arch: `sudo pacman -S xrt xrt-plugin-amdxdna` (and `amdxdna-dkms` from
+    the AUR only if your kernel lacks the driver)
 
   `xrt-smi examine` should then list the NPU.
 - Mesa's Vulkan driver for the GPU (`mesa-vulkan-drivers` on Ubuntu,
@@ -170,13 +173,13 @@ Treat it as experimental until this section says otherwise.
   *    hard    memlock    unlimited
   ```
 
-**Quick start:** download `zest-<version>-llama-b10944-ubuntu-x64.tar.gz`
+**Quick start:** download `zest-<version>-llama-b12109-ubuntu-x64.tar.gz`
 from the [releases page](https://github.com/Cyronius/zest/releases),
 unpack it, and use `zest` as above:
 
 ```
-tar -xzf zest-<version>-llama-b10944-ubuntu-x64.tar.gz
-cd zest-<version>-llama-b10944-ubuntu-x64
+tar -xzf zest-<version>-llama-b12109-ubuntu-x64.tar.gz
+cd zest-<version>-llama-b12109-ubuntu-x64
 ./zest llama-server -m model.gguf
 ./npu llama-server -m model.gguf
 ```
@@ -197,9 +200,11 @@ On Linux, `zest` finds llama.cpp's downloads in `~/.cache/llama.cpp` (or
 It becomes the program it starts, so Ctrl+C, the exit code and stopping it
 work as they would for the program alone.
 
-**Not known yet on Linux:** whether the NPU's memory ceiling (about 26 GB
-on Windows, see Limitations) is the same there. The default 20 GB limit
-applies on both. The speed and accuracy tables below are from Windows.
+**The NPU's memory ceiling seen on Windows** (about 26 GB, see Limitations)
+did not show on Strix Halo under Linux: the same test filled the NPU with 16
+to 64 GiB of weights, and every result was right (2026-11-20). So on Linux
+the default has no 20 GB cap: the NPU's weight copies may take the memory
+free at load, less what's kept back for the rest of the machine.
 
 ## The NPU's power mode
 
@@ -241,9 +246,58 @@ C:\Windows\System32\AMD\xrt-smi.exe configure --pmode default
 ## Results
 
 Prompt reading speed with the add-on, against the GPU alone, both reading in
-2,048-token chunks (what `zest` uses). Ryzen AI 9 HX 370, measured 2026-10-05.
-Each figure is the median of the per-round ratios, with the slowest and
-fastest round in brackets.
+2,048-token chunks (what `zest` uses). Each figure is the median of the
+per-round ratios, with the slowest and fastest round in brackets. The two
+machines' tables come from different builds and dates: read each row against
+its own GPU column, not across tables.
+
+### Strix Halo
+
+Ryzen AI MAX+ 395 with Radeon 8060S, 128 GB, Arch Linux, measured 2026-11-21.
+Tokens a second, and in brackets the slowest and fastest round's speed
+against the GPU alone. "Split off" is the same build with
+`ZEST_SPLIT=0`: the NPU takes whole pieces and the GPU waits its turn.
+
+| model | quant | GPU alone | with the add-on | split off | rounds |
+|---|---|---|---|---|---|
+| LFM2.5 2.6B | Q8_0 | 2,983 | **4,647** (1.55–1.56x) | 3,295 (1.10–1.13x) | 9 |
+| LFM2.5 1.2B | Q8_0 | 6,514 | **9,958** (1.49–1.55x) | 7,279 (1.11–1.14x) | 9 |
+| Qwen3.8-27B | Q4_K_M | 343 | **492** (1.43–1.44x) | 339 (0.99–0.99x) | 5 |
+| Qwen3-4B | Q4_K_M | 1,859 | **2,593** (1.39–1.40x) | 1,875 (1.00–1.03x) | 5 |
+| Qwen3.8-27B | UD-IQ3_S | 352 | **487** (1.38–1.38x) | 339 (0.97–0.97x) | 5 |
+| Qwen3.5-9B | Q4_K_M | 1,080 | **1,416** (1.29–1.31x) | 1,045 (0.96–0.97x) | 5 |
+| Qwen3.8-27B, 20 GB limit (`--memory-gb 20`) | Q4_K_M | 342 | **449** (1.27–1.32x) | 340 (0.99–1.00x) | 5 |
+| LFM2.5-350M | Q8_0 | 18,602 | **23,430** (1.24–1.28x) | 16,579 (0.88–0.90x) | 9 |
+| Qwen3.5-2B | Q4_K_M | 3,482 | **4,363** (1.25–1.26x) | 3,349 (0.96–0.97x) | 9 |
+| Qwen3-Coder-30B-A3B (mixture of experts) | Q4_K_M | 1,713 | 1,651 (0.96–0.97x) | 1,443 (0.84–0.84x) | 5 |
+| Qwen3.6 35B-A3B (mixture of experts) | UD-Q4_K_XL | 1,352 | 1,286 (0.88–0.96x) | 1,096 (0.81–0.82x) | 5 |
+
+- **The gain is both devices multiplying at once.** The NPU takes half the
+  rows of each prompt piece and the GPU the other half at the same time (see
+  [How it works](#how-it-works)). This GPU is about as fast as the NPU at
+  these multiplies, so with the split off, taking turns gains nothing on
+  most models. The LFM2.5 models of 1.2B and 2.6B are the ones measured that
+  gain either way.
+- **On Linux every layer of the big model is on the NPU.** Windows' default
+  limit of 20 GB for the NPU's weight copies holds 52 of Qwen3.8-27B's 64
+  layers; Linux has no such limit (see "The NPU holds only so much" under
+  [Limitations](#limitations)), so all 64 go there (25.8 GB of copies). The
+  two Q4_K_M rows are the difference.
+- **Mixture-of-experts models come out slightly slower.** The NPU can't run
+  the expert step, which is nearly half of such a model's prompt work, so it
+  gets only the attention and router weights.
+- **Keep the processor free.** The add-on's own work between the NPU's
+  multiplies runs on the CPU. A first run of Qwen3.5-9B with one other
+  process using a full core read at 1.16–1.17x instead of 1.29–1.31x, and
+  one of Qwen3.6 35B-A3B with a 23-core job running at 0.67–0.81x. Neither
+  is in the table.
+
+### Strix Point
+
+Ryzen AI 9 HX 370 with Radeon 890M, Windows 11, measured 2026-10-05 with an
+earlier build, before the row split.
+Through Lemonade with the v0.3.0 add-on on b10944 (2026-11-21, split off as is now the
+default here), see the [README's rerun table](../README.md#rerun-with-the-v030-add-on-2026-11-21).
 
 | model | quant | width | GPU alone, tokens/s | with the add-on | rounds |
 |---|---|---|---|---|---|
@@ -312,12 +366,15 @@ of the rounds. The machine was otherwise idle and its processor and GPU load
 was logged every five seconds throughout; note that such a log counts the
 benchmark's own work, so the steadiness of the rounds within a model is the
 better evidence that nothing else interfered. Compare only paired, repeated
-runs like these: on this machine a single run proves little.
+runs like these: on this machine a single run proves little. The Strix Halo
+figures were measured the same way (`bench.py`), one model at a time with
+the GPU and the NPU reserved and a record kept of any other process using
+more than half a core; every round's figures and that record are in
+[halo-page-2026-11-21.json](results/halo-page-2026-11-21.json).
 
 **To measure your own models:** `bench.ps1` runs the same paired
 measurement and prints a row of this table for each model you give it. It's
-in `tools\` in the repo and next to `zest` in the release zip. On Linux it
-runs under PowerShell 7 (`pwsh bench.ps1 -Model ...`).
+in `tools\` in the repo and next to `zest` in the release zip.
 
 ```
 powershell -ExecutionPolicy Bypass -File bench.ps1 -Model C:\models\Qwen3-4B-Q4_K_M.gguf
@@ -325,6 +382,19 @@ powershell -ExecutionPolicy Bypass -File bench.ps1 -Model C:\models\Qwen3-4B-Q4_
 
 `-Rounds 9` for models under about 3B. `-Kl -Text <a long text file>` also
 measures how far the answers drift from the GPU's, as in the Accuracy table.
+
+`bench.py` is the same measurement in Python 3, for Linux (where `bench.ps1`
+also runs under PowerShell 7, `pwsh bench.ps1 -Model ...`) and for Windows
+(`python bench.py ...`):
+
+```
+./bench.py ~/models/Qwen3-4B-Q4_K_M.gguf
+./bench.py --rounds 9 --kl --text long.txt --no-split small.gguf
+```
+
+`--no-split` adds a column with the row split off (`ZEST_SPLIT=0`), to
+see what the split is worth on your machine. Its table is the Strix Halo
+one's: tokens a second, then the slowest and fastest round's speedup.
 
 ### Against other engines
 
@@ -421,50 +491,102 @@ token. The reply column compares a 32-token greedy reply to a prompt of about
 The same holds with llama-server's parallel slots, cached conversations,
 contexts of 32,768 tokens, and two models served at once by its router.
 
+The table above is from Strix Point with an earlier build. On Strix Halo with
+the current one (2026-11-21, by `bench.py --kl`'s method over eight 512-token pieces of
+this repository's README and spec):
+
+| model | mean KL divergence | same top token |
+|---|---|---|
+| Qwen3.5-2B Q4_K_M | 0.0014 | 97.6% |
+| Qwen3.5-9B Q4_K_M | 0.0018 | 97.9% |
+| LFM2.5 1.2B Q8_0 | 0.0020 | 97.2% |
+| Qwen3.8-27B Q4_K_M | 0.0031 | 95.9% |
+| LFM2.5 2.6B Q8_0 | 0.0036 | 97.5% |
+| Qwen3.8-27B UD-IQ3_S | 0.0037 | 96.3% |
+| Qwen3-Coder-30B-A3B Q4_K_M (mixture of experts) | 0.0049 | 96.3% |
+| Qwen3.6 35B-A3B UD-Q4_K_XL (mixture of experts) | 0.0072 | 94.0% |
+| LFM2.5-350M Q8_0 | 0.0083 | 95.5% |
+| Qwen3-4B Q4_K_M | 0.0103 (0.0035 without one token) | 97.3% |
+
+- **The row split halves the drift**, because half of each piece's rows are
+  the GPU's own results. With the split off the same models gave 0.0028 to
+  0.0138.
+- **Qwen3-4B's figure is one token.** After `https://cyron`, the third time
+  that address appears in the text, the add-on gives the right next token a
+  probability of 1.00, the GPU alone 0.17 and the CPU alone 0.06. That is
+  also where llama.cpp's own CPU and GPU results differ most from each other
+  (0.80 there, under 0.1 nearly everywhere else): at such a token the model
+  amplifies any rounding, and 8-bit blocks round more than the GPU does.
+  Without it the mean is 0.0035
+  ([the comparison](results/halo-page-2026-11-19.json), `qwen3_4b_one_token`).
+- **Both mixture-of-experts models stayed under 0.01 here.** They are not
+  the two measured on Strix Point, which were over it.
+
 ## Limitations
 
-- **Linux is untested on an NPU by us.** It builds and passes the tests
-  that need no NPU; see [Linux](#linux).
-- **Only tested on Strix Point.** Other Ryzen AI chips whose NPU passes the
-  test at start are let in, untested.
+- **Tested on Strix Point (Windows) and Strix Halo (Linux).** Other Ryzen AI
+  chips whose NPU passes the test at start are let in, untested, and so are
+  the other two pairings of machine and system; see [Linux](#linux).
 - **Prompt reading only.** Replies are written one token at a time, and that
   stays on the GPU.
 - **Pieces under 1,024 tokens stay on the GPU**, so short prompts don't use
   the NPU. `zest --min-chunk` changes that.
-- **Narrow models are slower on the NPU.** Both models we tested with a width
-  (embedding size) under 2,048 read prompts more slowly with the add-on than
-  without it: 0.77x at width 1,536 and 0.89x at width 1,024 (see Results).
-  Width 2,048 and up gain. Roughly, the losing bracket is models under about
-  1.5 billion parameters. The add-on doesn't turn them away: if you start it,
-  it runs, and it says this once on the first prompt:
+- **Narrow models were slower on Strix Point.** Both models we tested there
+  with a width (embedding size) under 2,048 read prompts more slowly with the
+  add-on than without it: 0.77x at width 1,536 and 0.89x at width 1,024 (see
+  Results). Width 2,048 and up gained. That was before the row split; on
+  Strix Halo with it, LFM2.5-350M (width 1,024) gained 1.27x. The add-on
+  doesn't turn narrow models away: if you start it, it runs, and it still
+  says this once on the first prompt:
 
   ```
   xdna: narrow model (width 1536): the GPU alone was faster than the NPU on
   every model this size we tested. Running it on the NPU as asked
   ```
 
-  For those models, use the GPU alone (`-dev Vulkan0`, or llama.cpp without
-  `zest`).
-- **Memory:** the NPU keeps its own 8-bit copy of each weight it uses,
-  about 1.1 GB per billion parameters, on top of llama.cpp's. It's built
-  in the background while the model loads, which takes a few seconds (4.4 s
-  for Qwen3-4B). llama-server is usually ready before the first request; a
-  prompt given on the command line waits for the rest.
+  If yours is slower with the add-on (`bench.ps1` or `bench.py` tells you),
+  use the GPU alone (`-dev Vulkan0`, or llama.cpp without `zest`).
+- **Memory:** the NPU keeps its own BFP16 copy of each weight it uses,
+  about 1.1 GB per billion parameters, on top of llama.cpp's. The loader
+  dequantizes one GGUF row at a time directly into the mapped NPU buffer,
+  without a full float32 or packed host copy. Model load waits for the
+  NPU buffers to finish, so the first request does not pay for them.
   The copies are kept within the memory free once the model is loaded, less
   4 GB or a tenth of the machine's memory, whichever is larger, and at most
-  20 GB. When they don't all fit, the first layers that do go to the NPU
+  20 GB on Windows. When they don't all fit, the first layers that do go to the NPU
   and the rest stay on the GPU, and the add-on says so:
   `xdna: NPU weight copies limited to 20.0 GB (...): the first 49 layers on
   the NPU, the rest on the GPU`. `zest --memory-gb` (or
-  `GGML_XDNA_MAX_COPY_GB`) sets the limit.
+  `ZEST_MAX_COPY_GB`) sets the limit. A second kernel reads Q4_K
+  weights as the file holds them and unpacks them on the NPU
+  (`ZEST_WEIGHTS=quant`, see [Settings](#settings)): about half the
+  memory, so more layers fit, but slower, so it is not the default.
+- **On Strix Halo the gain depends on the row split.** That GPU runs these
+  multiplies about as fast as the NPU, so with the split off the add-on only
+  draws level with the GPU alone (0.95–0.99x in [Results](#results)), and an
+  earlier build without it lost (231–255 against 278–300 tokens/s on
+  Qwen3.8-27B). The split needs the processor too: other work on the CPU
+  takes the gain away before it slows the GPU alone. What was tried on the
+  way is in [the 2026-11-13 result](results/halo-zest-qwen38-27b-2026-11-13.json)
+  and the later `halo-*` files next to it.
+- **On Strix Point the split is off by default.** The Radeon 890M has 16
+  compute units to the 8060S's 40, so its half of each piece finishes after
+  the NPU's and the NPU waits. Through Lemonade on 2026-11-21 the split gave
+  1.24–1.31x the GPU alone on three models, against 1.48–1.58x with it off
+  ([results](results/strix-point-2026-11-21/)). The add-on picks the default
+  from the GPU's name (Radeon 8x0M: off; anything else: on), and
+  `ZEST_SPLIT` overrides it.
 - **The NPU holds only so much.** On our 88 GB machine, once the NPU's
   memory passes 26 GB, some of it comes back damaged, with no error. That
   limit is the NPU's own: what the GPU uses doesn't change it. That's why
-  the default stops at 20 GB. If you
+  the default stops at 20 GB on Windows. If you
   raise it with `--memory-gb` and that happens, the add-on notices the
   broken results, says so in one line, and hands the work to the GPU: the
   answer stays right, and the rest of that prompt and every later one run
-  at the GPU's usual speed.
+  at the GPU's usual speed. On Strix Halo under Linux the same
+  test found nothing damaged up to 64 GiB (2026-11-20), so the limit may be
+  Windows' or that machine's rather than the NPU's. A build from source
+  includes the test, `npu-ceiling-repro`.
 - **Mixture-of-experts models give the NPU only part of the work.** The NPU
   can't run the expert step, so only the attention and shared weights move to
   it; whether that's faster depends on the model file (see Results). Their answers
@@ -507,8 +629,16 @@ them, so each hand-over covers most of a transformer block.
 On the NPU, one kernel program serves every model: the add-on makes the NPU
 instructions for each matrix size itself, so there's nothing to build per
 model. The kernel works in bfp16, blocks of eight 8-bit values sharing one
-exponent. Each weight is converted once, on first use. While the NPU runs one
-part of the prompt, the CPU prepares the next.
+exponent. Each weight is converted once, on first use. The NPU takes half
+the rows of each piece and the GPU runs the other half at the same time, so
+both devices multiply at once instead of taking turns. While the NPU runs one
+part of the prompt, the CPU prepares the next. Where a multiply's
+activations fit, the NPU keeps them in its own memory for the whole call
+rather than reading them from main memory again for every stretch of
+outputs. A feed-forward block's two
+multiplies run back to back on the NPU: the first writes its result
+(SiLU(gate) x up) straight into the form the second reads, so the CPU never
+handles the block's widest tensor.
 
 ## Troubleshooting
 
@@ -525,8 +655,8 @@ Without the launcher, the add-on offers no XDNA0 device and logs
 
 | reason | what to do |
 |---|---|
-| no bfp16_gemm.xclbin next to ggml-zest.dll (or libggml-zest.so) | copy it there, or set `GGML_XDNA_KERNELS` to it |
-| GGML_XDNA_KERNELS=... names no xclbin | fix the path |
+| no bfp16_gemm.xclbin next to ggml-zest.dll (or libggml-zest.so) | copy it there, or set `ZEST_KERNELS` to it |
+| ZEST_KERNELS=... names no xclbin | fix the path |
 | no NPU driver (xrt_coreutil.dll not found) | install the AMD NPU driver |
 | no NPU driver (XRT's libxrt_coreutil.so.2 not found) | Linux: install XRT (see [Linux](#linux)) |
 | the NPU driver's xrt_coreutil.dll (or libxrt_coreutil.so.2) lacks a function this backend uses | the driver is older or newer than the add-on was built for; report it |
@@ -539,7 +669,7 @@ Without the launcher, the add-on offers no XDNA0 device and logs
 | the add-on didn't load | the add-on isn't next to `zest`, or `GGML_BACKEND_PATH` points elsewhere |
 
 **Is it doing anything?** `zest` prints `zest: prompts on the NPU` when it
-turns it on. `set GGML_XDNA_TRACE=1` (`export GGML_XDNA_TRACE=1` on Linux)
+turns it on. `set ZEST_TRACE=1` (`export ZEST_TRACE=1` on Linux)
 prints where the time goes every few
 hundred multiplies. A prompt under 1,024 tokens never reaches the NPU
 (`zest --min-chunk` changes that).
@@ -549,29 +679,59 @@ machine, because the processor, GPU and NPU share one chip and its power
 budget. Compare medians of several runs, not single runs.
 
 **Reporting a problem:** open an issue with your chip, the NPU and GPU driver
-versions, the model, the command, and the output with `GGML_XDNA_TRACE=1`.
+versions, the model, the command, and the output with `ZEST_TRACE=1`.
 
 ## Settings
 
 All optional, and none needed with `zest`. They're environment variables
-(`set GGML_XDNA_TRACE=1` in cmd, `$env:GGML_XDNA_TRACE = "1"` in
-PowerShell, `export GGML_XDNA_TRACE=1` on Linux), read once when llama.cpp
-starts: set them before starting it.
-An empty value counts as unset.
+(`set ZEST_TRACE=1` in cmd, `$env:ZEST_TRACE = "1"` in PowerShell,
+`export ZEST_TRACE=1` on Linux), read once when llama.cpp starts: set them
+before starting it, or before starting Lemonade, whose llama-server inherits
+them. An empty value counts as unset.
 
-| variable | default | |
+llama.cpp's own command line can't carry them: `llama-server` and the other
+programs stop on an option they don't know. The `zest` launcher's
+`--memory-gb` and `--min-chunk` set two of them for you.
+
+Before 2026-11-22 these were named `GGML_XDNA_*` (`GGML_XDNA_TRACE` and so on).
+The old names still work for now, with a warning that names the new one.
+
+### Everyday settings
+
+| variable | default | what it does |
 |---|---|---|
-| `GGML_XDNA_KERNELS` | `bfp16_gemm.xclbin` next to the add-on | another xclbin |
-| `GGML_XDNA_MIN_BATCH` | 1024 | the smallest piece of a prompt, in tokens, the NPU takes (`zest --min-chunk` sets it) |
-| `GGML_XDNA_MIN_MFLOP` | 256 | the smallest multiply the NPU takes, in millions of operations |
-| `GGML_XDNA_COPY_AT_LOAD` | 1 | 0 builds the NPU's weight copies during the first prompt instead of while the model loads |
-| `GGML_XDNA_MAX_COPY_GB` | memory free at load, less 4 GB or a tenth of memory, at most 20 | the most memory, in GB, the NPU's weight copies may take; 0 keeps the NPU out (`zest --memory-gb` sets it) |
-| `GGML_XDNA_BLOCKS` | 1 | 0 takes only the multiplies, not the steps between them |
-| `GGML_XDNA_STREAMS` | 2 | how many parts a piece is split into, so the CPU and NPU overlap |
-| `GGML_XDNA_N_THREADS` | all cores | CPU threads for the add-on's own work |
-| `GGML_XDNA_TRACE` | 0 | 1 prints where the time goes |
-| `GGML_XDNA_PINNED` | 1 | 0 reads from the GPU into ordinary memory instead of pinned memory: slower, for software Vulkan devices |
-| `GGML_XDNA_HOST_ONLY` | 0 | 1 runs the NPU's share on the CPU instead: for tests without an NPU |
+| `ZEST_SPLIT` | off on Radeon 800M laptop graphics (Strix Point, Krackan Point); 50 elsewhere | the row split. The NPU takes this share, in percent, of each prompt piece's rows (in whole 512s) and the GPU runs the rest at the same time. `off` or `0`: the NPU takes whole pieces and the GPU waits its turn. `on`: 50. On Strix Point the split was slower (1.24-1.31x the GPU alone against 1.48-1.58x with it off, 2026-11-21), so it's off there unless you set it |
+| `ZEST_MAX_COPY_GB` | memory free at load, less 4 GB or a tenth of memory; on Windows at most 20 | the most memory, in GB, the NPU's weight copies may take; layers that don't fit stay on the GPU. 0 keeps the NPU out (`zest --memory-gb` sets it) |
+| `ZEST_MIN_BATCH` | 1024 | the smallest piece of a prompt, in tokens, the NPU takes; smaller ones go to the GPU (`zest --min-chunk` sets it) |
+| `ZEST_WEIGHTS` | bfp16 | which NPU kernel the weight copies are for: `bfp16` (9 bits a weight), or `quant` (Q4_K at 4.75 bits, unpacked on the NPU: about half the memory, so more layers fit, but 20-45% slower prefill on Qwen3.8-27B) |
+| `ZEST_COPY_AT_LOAD` | 1 | 1 finishes the NPU's weight copies before model load returns; 0 builds them during the first prompt |
+| `ZEST_TRACE` | 0 | 1 prints where the time goes, every 196 multiplies, and the split's setting |
+
+### Tuning
+
+| variable | default | what it does |
+|---|---|---|
+| `ZEST_MIN_MFLOP` | 256 | the smallest multiply the NPU takes, in millions of operations |
+| `ZEST_BLOCKS` | 1 | 0 takes only the multiplies, not the small steps between them |
+| `ZEST_STREAMS` | 2 | how many parts a piece is cut into, so the CPU and NPU overlap |
+| `ZEST_CHAIN` | 1 | 0 brings a feed-forward block's middle result back to the CPU between its two multiplies instead of chaining them on the NPU (the answers are the same either way) |
+| `ZEST_N_THREADS` | all cores | CPU threads for the add-on's own work |
+| `ZEST_PINNED` | 1 | 0 reads from the GPU into ordinary memory instead of pinned memory: slower, for software Vulkan devices |
+| `ZEST_KERNELS` | `bfp16_gemm.xclbin` next to the add-on | another xclbin: the file, or a folder holding it |
+| `ZEST_QKERNELS` | `bfpq_gemm.xclbin` next to the add-on | another xclbin for the quantized-weight kernel |
+
+### For testing and debugging
+
+| variable | default | what it does |
+|---|---|---|
+| `ZEST_TRACE_EVERY` | unset | with `ZEST_TRACE=1`, prints after every piece instead of every 196 multiplies |
+| `ZEST_HOST_ONLY` | 0 | 1 runs the NPU's share on the CPU instead: for tests without an NPU |
+| `ZEST_BLOCK_OPS` | all | a comma list of the small ops block claiming may take (ggml's names, such as `ADD,RMS_NORM`), to find a wrong result op by op |
+| `ZEST_OUT16` | 1 | 0 has the NPU return float32 results instead of 16-bit ones |
+| `ZEST_WRITE_ALL` | 0 | 1 writes every result of a piece back, not only the ones read outside it |
+| `ZEST_DUMP` | unset | 1 prints each small op's inputs and output (first values) |
+| `ZEST_FAIL_AFTER` | unset | n: every NPU submission after the n-th fails, to test that the GPU takes over |
+| `ZEST_NAN_AFTER` | unset | n: every NPU result after the n-th comes back as NaN, to test that damaged results are caught |
 
 ## Building from source
 
@@ -582,9 +742,9 @@ CMake and Ninja). Then, from the repository:
 build.cmd
 ```
 
-It downloads llama.cpp b10944 and its matching headers into `third_party\`,
+It downloads llama.cpp b12109 and its matching headers into `third_party\`,
 builds the add-on and its tests, copies the DLL, the kernel and `zest.exe`
-next to the llama.cpp binaries in `third_party\llama-b10944`, and runs the
+next to the llama.cpp binaries in `third_party\llama-b12109`, and runs the
 tests. Run `zest` from there as in [Quick start](#quick-start). The NPU tests run only where the NPU
 driver is installed; the others need a Vulkan GPU. `build.cmd notest` skips
 the tests.
@@ -612,6 +772,9 @@ writes everything to one log file. It's what we ask Linux testers to run.
 The NPU kernel ships prebuilt
 ([kernels/bfp16_gemm/prebuilt](../kernels/bfp16_gemm/prebuilt)). Rebuilding it
 needs AMD's IRON toolchain; see [kernels/bfp16_gemm/build.ps1](../kernels/bfp16_gemm/build.ps1).
+On Linux, [build-linux.sh](../kernels/bfp16_gemm/build-linux.sh) uses IRON
+1.4.3 and its Peano compiler to rebuild the same kernel. An `xclbin` built
+with these settings passed the wide NPU hardware test on Strix Halo.
 
 What the add-on must do, and how each part is checked, is in
 [specs/xdna-backend/spec.md](../specs/xdna-backend/spec.md).

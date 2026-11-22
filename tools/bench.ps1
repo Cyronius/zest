@@ -52,7 +52,7 @@ if (-not $LlamaDir) {
     # next to this script (the release zip), else the repo's build of llama.cpp
     $LlamaDir = $PSScriptRoot
     if (-not (Test-Path (Join-Path $LlamaDir $zestName))) {
-        $LlamaDir = [IO.Path]::Combine($PSScriptRoot, '..', 'third_party', 'llama-b10944')
+        $LlamaDir = [IO.Path]::Combine($PSScriptRoot, '..', 'third_party', 'llama-b12109')
     }
 }
 $zest = Join-Path $LlamaDir $zestName

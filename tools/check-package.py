@@ -13,7 +13,7 @@ def check(package: Path) -> None:
     windows = os.name == "nt"
     suffix = ".exe" if windows else ""
     backend = "ggml-zest.dll" if windows else "libggml-zest.so"
-    required = [backend, "bfp16_gemm.xclbin", "llama-server" + suffix,
+    required = [backend, "bfp16_gemm.xclbin", "bfpq_gemm.xclbin", "llama-server" + suffix,
                 "zest" + suffix, "npu" + suffix]
     required += ["Start-Lemonade.cmd", "tools/start-lemonade.ps1"] if windows else ["libggml-zest-xrt.so"]
     for name in required:
@@ -46,7 +46,7 @@ def check(package: Path) -> None:
         raise RuntimeError("zest and npu must contain the same launcher")
 
     environment = os.environ.copy()
-    for name in ("GGML_BACKEND_PATH", "GGML_XDNA_KERNELS"):
+    for name in ("GGML_BACKEND_PATH", "ZEST_KERNELS"):
         environment.pop(name, None)
     # A different working directory prevents accidental reliance on the checkout.
     with tempfile.TemporaryDirectory(prefix="zest-launcher-") as working:

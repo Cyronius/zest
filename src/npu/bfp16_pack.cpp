@@ -94,10 +94,14 @@ void bfp16_encode_block(const float * x, uint8_t * out) {
     m4 = _mm_max_epi32(m4, _mm_shuffle_epi32(m4, _MM_SHUFFLE(2, 3, 0, 1)));
     const int mx = _mm_cvtsi128_si32(m4);
     const int sexp = 133 - mx + 127;  // biased exponent of the scale
-    if (sexp >= 1 && sexp <= 254) {
+    if (sexp >= 2 && sexp <= 254) {
         out[0] = (uint8_t) mx;
-        const __m256  scale = _mm256_castsi256_ps(_mm256_set1_epi32(sexp << 23));
-        __m256i q = _mm256_cvtps_epi32(_mm256_mul_ps(v, scale));
+        __m256i q = _mm256_cvtps_epi32(_mm256_mul_ps(v, _mm256_castsi256_ps(_mm256_set1_epi32(sexp << 23))));
+        // A value that rounds up to +128: the block again, one exponent up
+        if (!_mm256_testz_si256(_mm256_cmpgt_epi32(q, _mm256_set1_epi32(127)), _mm256_set1_epi32(-1))) {
+            out[0] = (uint8_t) (mx + 1);
+            q = _mm256_cvtps_epi32(_mm256_mul_ps(v, _mm256_castsi256_ps(_mm256_set1_epi32((sexp - 1) << 23))));
+        }
         q = _mm256_min_epi32(_mm256_max_epi32(q, _mm256_set1_epi32(-128)), _mm256_set1_epi32(127));
         const __m128i q16 = _mm_packs_epi32(_mm256_castsi256_si128(q), _mm256_extracti128_si256(q, 1));
         _mm_storel_epi64((__m128i *) (out + 1), _mm_packs_epi16(q16, q16));
@@ -118,11 +122,100 @@ void bfp16_encode_block(const float * x, uint8_t * out) {
         memcpy(&u, &x[i], 4);
         maxe = std::max(maxe, (u >> 23) & 0xffu);
     }
-    out[0] = (uint8_t) maxe;
-    const int sh = 133 - (int) maxe;
+    int sh = 133 - (int) maxe;
+    float q[8];
+    bool over = false;
     for (int i = 0; i < 8; i++) {
-        const float q = std::nearbyint(std::ldexp(x[i], sh));
-        out[1 + i] = (uint8_t) (int8_t) std::min(127.0f, std::max(-128.0f, q));
+        q[i] = std::nearbyint(std::ldexp(x[i], sh));
+        over |= q[i] > 127.0f;
+    }
+    if (over) {  // a value rounds up to +128: the block again, one exponent up
+        maxe++;
+        sh--;
+        for (int i = 0; i < 8; i++) q[i] = std::nearbyint(std::ldexp(x[i], sh));
+    }
+    out[0] = (uint8_t) maxe;
+    for (int i = 0; i < 8; i++) out[1 + i] = (uint8_t) (int8_t) std::min(127.0f, std::max(-128.0f, q[i]));
+}
+
+#if defined(__AVX2__) && defined(__GNUC__) && defined(__x86_64__)
+// The activation tile offers pairs of neighboring rows at each K block. Zen 5
+// can convert both blocks with one 512-bit multiply, conversion, clamp and
+// saturating byte pack. The scalar exponent reduction remains separate because
+// each eight-value block has its own shared exponent.
+__attribute__((target("avx512f,avx512bw,avx512dq,avx512vl")))
+static void bfp16_encode_pair_avx512(const float * x0, const float * x1, uint8_t * out0, uint8_t * out1) {
+    const __m256 v0 = _mm256_loadu_ps(x0), v1 = _mm256_loadu_ps(x1);
+    auto max_exp = [](__m256 v) {
+        const __m256i e = _mm256_and_si256(_mm256_srli_epi32(_mm256_castps_si256(v), 23), _mm256_set1_epi32(0xff));
+        __m128i m = _mm_max_epi32(_mm256_castsi256_si128(e), _mm256_extracti128_si256(e, 1));
+        m = _mm_max_epi32(m, _mm_shuffle_epi32(m, _MM_SHUFFLE(1, 0, 3, 2)));
+        m = _mm_max_epi32(m, _mm_shuffle_epi32(m, _MM_SHUFFLE(2, 3, 0, 1)));
+        return _mm_cvtsi128_si32(m);
+    };
+    const int e0 = max_exp(v0), e1 = max_exp(v1);
+    const int s0 = 133 - e0 + 127, s1 = 133 - e1 + 127;
+    if (s0 < 2 || s0 > 254 || s1 < 2 || s1 > 254) {
+        bfp16_encode_block(x0, out0);
+        bfp16_encode_block(x1, out1);
+        return;
+    }
+    const __m512 v = _mm512_insertf32x8(_mm512_castps256_ps512(v0), v1, 1);
+    const __m512i scales = _mm512_mask_blend_epi32(0xff00, _mm512_set1_epi32(s0 << 23), _mm512_set1_epi32(s1 << 23));
+    __m512i q = _mm512_cvtps_epi32(_mm512_mul_ps(v, _mm512_castsi512_ps(scales)));
+    if (_mm512_cmpgt_epi32_mask(q, _mm512_set1_epi32(127))) {  // a block steps its exponent up (rare)
+        bfp16_encode_block(x0, out0);
+        bfp16_encode_block(x1, out1);
+        return;
+    }
+    q = _mm512_min_epi32(_mm512_max_epi32(q, _mm512_set1_epi32(-128)), _mm512_set1_epi32(127));
+    const __m128i bytes = _mm512_cvtsepi32_epi8(q);
+    out0[0] = (uint8_t) e0;
+    out1[0] = (uint8_t) e1;
+    _mm_storel_epi64((__m128i *) (out0 + 1), bytes);
+    _mm_storel_epi64((__m128i *) (out1 + 1), _mm_srli_si128(bytes, 8));
+}
+
+__attribute__((target("avx512f,avx512bw,avx512dq,avx512vl")))
+static void bfp16_pack_a_tile_rows_avx512(const float * const * rows, int64_t r0, int64_t count,
+                                           int64_t K, const bfp16_tiling & t, uint8_t * out) {
+    const int64_t tkb = t.k / 8, nk = K / t.k, tile_blocks = t.m * tkb;
+    const int64_t base = (r0 / t.m) * nk * tile_blocks + ((r0 % t.m) / 16) * tkb * 16 + r0 % 16;
+    for (int64_t kk = 0; kk < nk; kk++) {
+        const int64_t first_cb = kk * tkb;
+        for (int64_t sx = 0; sx < tkb; sx++) {
+            uint8_t * dst = out + (base + kk * tile_blocks + sx * 16) * BFP16_BLOCK_BYTES;
+            const int64_t c = (first_cb + sx) * 8;
+            int64_t i = 0;
+            for (; i + 1 < count; i += 2)
+                bfp16_encode_pair_avx512(rows[i] + c, rows[i + 1] + c,
+                                         dst + i * BFP16_BLOCK_BYTES, dst + (i + 1) * BFP16_BLOCK_BYTES);
+            if (i < count) bfp16_encode_block(rows[i] + c, dst + i * BFP16_BLOCK_BYTES);
+        }
+    }
+}
+#endif
+
+void bfp16_pack_a_tile_rows(const float * const * rows, int64_t r0, int64_t count,
+                           int64_t K, const bfp16_tiling & t, uint8_t * out) {
+#if defined(__AVX2__) && defined(__GNUC__) && defined(__x86_64__)
+    static const bool avx512 = __builtin_cpu_supports("avx512f") && __builtin_cpu_supports("avx512bw") &&
+                               __builtin_cpu_supports("avx512dq") && __builtin_cpu_supports("avx512vl");
+    if (avx512) {
+        bfp16_pack_a_tile_rows_avx512(rows, r0, count, K, t, out);
+        return;
+    }
+#endif
+    const int64_t tkb = t.k / 8, nk = K / t.k, tile_blocks = t.m * tkb;
+    const int64_t base = (r0 / t.m) * nk * tile_blocks + ((r0 % t.m) / 16) * tkb * 16 + r0 % 16;
+    for (int64_t kk = 0; kk < nk; kk++) {
+        const int64_t first_cb = kk * tkb;
+        for (int64_t sx = 0; sx < tkb; sx++) {
+            uint8_t * dst = out + (base + kk * tile_blocks + sx * 16) * BFP16_BLOCK_BYTES;
+            const int64_t c = (first_cb + sx) * 8;
+            for (int64_t i = 0; i < count; i++)
+                bfp16_encode_block(rows[i] + c, dst + i * BFP16_BLOCK_BYTES);
+        }
     }
 }
 
@@ -167,6 +260,19 @@ void bfp16_pack_b_into(const float * w, int64_t N, int64_t K, const bfp16_tiling
     walk_b_run(N, K, t, run, [&](int64_t r, int64_t c, size_t off) { bfp16_encode_block(w + r * K + c * 8, out + off); });
 }
 
+void bfp16_pack_b_rows_into(int64_t N, int64_t K, const bfp16_tiling & t, uint8_t * out,
+                            const bfp16_runner & run, const bfp16_row_loader & load_row) {
+    run(N, [&](int64_t r0, int64_t r1) {
+        std::vector<float> row((size_t) K);
+        for (int64_t r = r0; r < r1; r++) {
+            load_row(r, row.data());
+            bfp16_b_row(r, N, K, t, [&](int64_t cb, size_t off) {
+                bfp16_encode_block(row.data() + cb * 8, out + off);
+            });
+        }
+    });
+}
+
 // Inside a tile, walk_tile's order: row pair (16 rows) by row pair, block
 // column by block column, then the pair's 16 rows.
 static int64_t in_tile(int64_t rr, int64_t cb, const bfp16_tiling & t) {
@@ -183,6 +289,45 @@ size_t bfp16_b_offset(int64_t r, int64_t cb, int64_t N, int64_t K, const bfp16_t
     const int64_t per_col = N / t.n / t.cols, nk = K / t.k, g = r / t.n;
     const int64_t tile = ((g % t.cols) * per_col + g / t.cols) * nk + cb / (t.k / 8);
     return (size_t) (tile * t.n * (t.k / 8) + in_tile(r % t.n, cb, t)) * BFP16_BLOCK_BYTES;
+}
+
+size_t bfp16_tile_words(const bfp16_tiling & t, int mode) {
+    const size_t all = (size_t) t.m * (size_t) t.n;
+    switch (mode) {
+        case 0: return all;
+        case 1: return all / 2;
+        case 2: return all / 4;
+        default: return (size_t) t.m * (size_t) (t.n / 16) * BFP16_BLOCK_BYTES / 4;
+    }
+}
+
+void bfp16_tile_row(const void * c, int64_t N, const bfp16_tiling & t, int mode, int64_t r, float * row) {
+    const int64_t tiles = N / t.n;
+    const int64_t groups = mode == 2 ? t.n / 16 : t.n / 8;  // 8-value runs a tile row holds
+    const size_t tile_bytes = bfp16_tile_words(t, mode) * 4, elem = mode == 0 ? sizeof(float) : sizeof(uint16_t);
+    // the row's first run: block row (r % m) / 8, row r % 8 inside it
+    const uint8_t * p = (const uint8_t *) c + (size_t) (r / t.m) * (size_t) tiles * tile_bytes +
+                        (size_t) (((r % t.m) / 8) * groups * 64 + (r % 8) * 8) * elem;
+    for (int64_t ct = 0; ct < tiles; ct++, p += tile_bytes, row += groups * 8) {
+        for (int64_t g = 0; g < groups; g++) {
+            const uint8_t * h = p + (size_t) g * 64 * elem;
+            if (mode == 0) {
+                memcpy(row + g * 8, h, 8 * sizeof(float));
+                continue;
+            }
+#ifdef __AVX2__
+            const __m256i x = _mm256_cvtepu16_epi32(_mm_loadu_si128((const __m128i *) h));
+            _mm256_storeu_ps(row + g * 8, _mm256_castsi256_ps(_mm256_slli_epi32(x, 16)));
+#else
+            for (int i = 0; i < 8; i++) {
+                uint16_t v;
+                memcpy(&v, h + i * 2, 2);
+                const uint32_t bits = (uint32_t) v << 16;
+                memcpy(row + g * 8 + i, &bits, 4);
+            }
+#endif
+        }
+    }
 }
 
 void bfp16_c_row(const float * c, int64_t M, int64_t N, const bfp16_tiling & t, int64_t r, int64_t n_cols, float * row) {

@@ -1,7 +1,7 @@
 // What the backend takes from Vulkan lives entirely in supports_op, the
 // device type and the buffer type: the three things the scheduler reads to
 // decide. So they're checked directly rather than inferred from a model run.
-// Run with GGML_XDNA_MIN_BATCH and GGML_XDNA_MIN_MFLOP unset (the defaults).
+// Run with ZEST_MIN_BATCH and ZEST_MIN_MFLOP unset (the defaults).
 //
 // Traces: XDNA-SHARED-BUFT, XDNA-BATCH-GATE, XDNA-WORK-FLOOR, XDNA-NO-OFFLOAD-OP, XDNA-SIZE-POLICY,
 //         XDNA-MODEL-WARNINGS
@@ -22,7 +22,7 @@ static void check(bool ok, const char * what) {
 
 // Whether this run is on the NPU (ctest's npu label) rather than host-only.
 static bool xdna_npu_mode() {
-    const char * h = getenv("GGML_XDNA_HOST_ONLY");
+    const char * h = getenv("ZEST_HOST_ONLY");
     return !(h && *h && strcmp(h, "0") != 0);
 }
 

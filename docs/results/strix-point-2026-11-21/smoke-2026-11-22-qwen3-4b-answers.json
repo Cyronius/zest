@@ -1,0 +1,241 @@
+{
+  "model": "extra.Qwen3-4B-Q4_K_M",
+  "lemonade": {
+    "all_models_loaded": [],
+    "max_models": {
+      "classification": 1,
+      "embedding": 1,
+      "image": 1,
+      "llm": 1,
+      "reranking": 1,
+      "transcription": 1,
+      "tts": 1
+    },
+    "model_loaded": null,
+    "pinned_helper_models": {
+      "classification": 0,
+      "embedding": 0,
+      "image": 0,
+      "llm": 0,
+      "reranking": 0,
+      "transcription": 0,
+      "tts": 0
+    },
+    "pinned_models": {
+      "classification": 0,
+      "embedding": 0,
+      "image": 0,
+      "llm": 0,
+      "reranking": 0,
+      "transcription": 0,
+      "tts": 0
+    },
+    "status": "ok",
+    "telemetry": {
+      "enabled": false
+    },
+    "update_check_done": true,
+    "version": "2026.43.3",
+    "websocket_port": 9000
+  },
+  "checks": [
+    {
+      "mode": "gpu",
+      "case": "early-fact",
+      "expected": "ZEST-4827",
+      "prompt_sha256": "1fcc25d4b8f0d3e73ba86884ea463225558012b024870ce86d6a314fbaa84e66",
+      "passed": true,
+      "answer_correct": true,
+      "format_correct": true,
+      "content": "ZEST-4827",
+      "reasoning_content": "",
+      "finish_reason": "stop",
+      "client_first_content_s": 6.341064299980644,
+      "client_total_s": 6.691725299984682,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 2805,
+        "prompt_ms": 6325.212,
+        "prompt_per_token_ms": 2.254977540106952,
+        "prompt_per_second": 443.4633969580782,
+        "predicted_n": 8,
+        "predicted_ms": 354.924,
+        "predicted_per_token_ms": 50.70342857142857,
+        "predicted_per_second": 19.722532147727403
+      },
+      "usage": {
+        "completion_tokens": 8,
+        "prompt_tokens": 2805,
+        "total_tokens": 2813,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      }
+    },
+    {
+      "mode": "gpu",
+      "case": "late-fact",
+      "expected": "LIME-1935",
+      "prompt_sha256": "830805ab2a9b8b1146c54c3e07e1f3956094b5391d0bab0664c0dd5d00a24fd8",
+      "passed": true,
+      "answer_correct": true,
+      "format_correct": true,
+      "content": "LIME-1935",
+      "reasoning_content": "",
+      "finish_reason": "stop",
+      "client_first_content_s": 9.28422979998868,
+      "client_total_s": 9.611949099984486,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 2803,
+        "prompt_ms": 6418.943,
+        "prompt_per_token_ms": 2.290026043524795,
+        "prompt_per_second": 436.67625651139133,
+        "predicted_n": 8,
+        "predicted_ms": 328.002,
+        "predicted_per_token_ms": 46.85742857142857,
+        "predicted_per_second": 21.341333284553144
+      },
+      "usage": {
+        "completion_tokens": 8,
+        "prompt_tokens": 2803,
+        "total_tokens": 2811,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      }
+    },
+    {
+      "mode": "gpu",
+      "case": "ledger",
+      "expected": "34",
+      "prompt_sha256": "12179de21fd531c20baa6a5adfff6cbc51d86c20fd031a62da49c07760dca116",
+      "passed": true,
+      "answer_correct": true,
+      "format_correct": false,
+      "content": "27 + 15 - 8 = 34",
+      "reasoning_content": "",
+      "finish_reason": "stop",
+      "client_first_content_s": 6.523443300044164,
+      "client_total_s": 7.146516500040889,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 2806,
+        "prompt_ms": 6487.342,
+        "prompt_per_token_ms": 2.3119536707056305,
+        "prompt_per_second": 432.5346189548817,
+        "predicted_n": 14,
+        "predicted_ms": 623.095,
+        "predicted_per_token_ms": 47.93038461538462,
+        "predicted_per_second": 20.86359222911434
+      },
+      "usage": {
+        "completion_tokens": 14,
+        "prompt_tokens": 2806,
+        "total_tokens": 2820,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      }
+    },
+    {
+      "mode": "npu",
+      "case": "early-fact",
+      "expected": "ZEST-4827",
+      "prompt_sha256": "1fcc25d4b8f0d3e73ba86884ea463225558012b024870ce86d6a314fbaa84e66",
+      "passed": true,
+      "answer_correct": true,
+      "format_correct": true,
+      "content": "ZEST-4827",
+      "reasoning_content": "",
+      "finish_reason": "stop",
+      "client_first_content_s": 4.352234899997711,
+      "client_total_s": 4.675342200032901,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 2805,
+        "prompt_ms": 4328.248,
+        "prompt_per_token_ms": 1.5430474153297682,
+        "prompt_per_second": 648.0682252957779,
+        "predicted_n": 8,
+        "predicted_ms": 323.076,
+        "predicted_per_token_ms": 46.15371428571429,
+        "predicted_per_second": 21.666728571605443
+      },
+      "usage": {
+        "completion_tokens": 8,
+        "prompt_tokens": 2805,
+        "total_tokens": 2813,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      }
+    },
+    {
+      "mode": "npu",
+      "case": "late-fact",
+      "expected": "LIME-1935",
+      "prompt_sha256": "830805ab2a9b8b1146c54c3e07e1f3956094b5391d0bab0664c0dd5d00a24fd8",
+      "passed": true,
+      "answer_correct": true,
+      "format_correct": true,
+      "content": "LIME-1935",
+      "reasoning_content": "",
+      "finish_reason": "stop",
+      "client_first_content_s": 7.409205400035717,
+      "client_total_s": 7.7349371000309475,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 2803,
+        "prompt_ms": 4525.801,
+        "prompt_per_token_ms": 1.6146275419193723,
+        "prompt_per_second": 619.3378807419946,
+        "predicted_n": 8,
+        "predicted_ms": 325.59,
+        "predicted_per_token_ms": 46.512857142857136,
+        "predicted_per_second": 21.49943180073098
+      },
+      "usage": {
+        "completion_tokens": 8,
+        "prompt_tokens": 2803,
+        "total_tokens": 2811,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      }
+    },
+    {
+      "mode": "npu",
+      "case": "ledger",
+      "expected": "34",
+      "prompt_sha256": "12179de21fd531c20baa6a5adfff6cbc51d86c20fd031a62da49c07760dca116",
+      "passed": true,
+      "answer_correct": true,
+      "format_correct": false,
+      "content": "27 + 15 - 8 = 34",
+      "reasoning_content": "",
+      "finish_reason": "stop",
+      "client_first_content_s": 4.3006720000412315,
+      "client_total_s": 4.924824799993075,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 2806,
+        "prompt_ms": 4272.77,
+        "prompt_per_token_ms": 1.5227263007840344,
+        "prompt_per_second": 656.7168370869482,
+        "predicted_n": 14,
+        "predicted_ms": 624.242,
+        "predicted_per_token_ms": 48.01861538461538,
+        "predicted_per_second": 20.8252568715338
+      },
+      "usage": {
+        "completion_tokens": 14,
+        "prompt_tokens": 2806,
+        "total_tokens": 2820,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      }
+    }
+  ]
+}

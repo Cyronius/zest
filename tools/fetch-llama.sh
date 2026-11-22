@@ -2,8 +2,8 @@
 # The Linux twin of fetch-llama.ps1, adapted from Nulifyer's port: the pinned release (checksum checked) and its headers.
 set -euo pipefail
 
-tag=b10944
-archive_sha256=de48f1c0890365d432dea3db1d8e9482686748fe5821f211719779e5724bdc7b
+tag=b12109
+archive_sha256=b5665ff7aaaf87139c3be7dfe417b39a187b97825a626b7cf554b45e4392aa6e
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 tp="$root/third_party"
 dist="$tp/llama-$tag"

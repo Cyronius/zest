@@ -1,0 +1,120 @@
+{
+ "date": "2026-11-19, 08:25-11:12",
+ "machine": "Ryzen AI MAX+ 395 / Radeon 8060S / XDNA2, 128 GB, Arch (Omarchy), Linux 7.2.15; power profile performance. Every run held the GPU and the NPU through the machine's scheduler (nobody else on them); other sessions' CPU work at a load average of 1-4.",
+ "software": "llama.cpp b10944 Linux Vulkan release, Mesa 26.2.5 RADV, xrt 2.21.75; zest a87d2ae (before), and the commit this record comes with (results copied by the GPU; pieces with no multiply run by the GPU), then the one that turns the row split on by default",
+ "models": {
+  "coder30": "Qwen3-Coder-30B-A3B-Instruct Q4_K_M: mixture of experts, width 2,048, 48 layers, 128 experts of 768, 8 used a token",
+  "q36_35b": "Qwen3.6-35B-A3B UD-Q4_K_XL: mixture of experts",
+  "dense": "Qwen3.5-2B, Qwen3.5-9B and Qwen3.8-27B, all Q4_K_M"
+ },
+ "method": "prefill bench at 2,048 tokens, -ngl 99 -n 0 -b 2048 -ub 2048 -r 3: median (min-max) of 3. Per-op GPU times from Vulkan's own timer (GGML_VK_PERF_LOGGER=1, which waits for every op, so totals run longer than untimed runs): the second of two prompts.",
+ "gpu_alone_ms_per_prompt_coder30": {
+  "expert_multiplies_mul_mat_id": 561.2,
+  "attention": 208.8,
+  "attention_projections_and_router_mul_mat": 232.1,
+  "everything_else": 195.3,
+  "all": 1197.4,
+  "by_op": {"gate and up (94 x 3.82 ms)": 358.8, "down, q4_K (24 x 3.90)": 93.7, "down, q6_K (23 x 4.72)": 108.6, "q (48 x 2.21)": 105.9, "o (48 x 1.81)": 87.0, "k and v (96)": 29.8, "router (47 x 0.20)": 9.4, "MUL": 54.7, "MULTI_ADD": 50.1, "RMS_NORM_MUL_ROPE": 36.3, "GLU": 29.2},
+  "reading": "the multiplies zest can take (weights times activations) are 19% of the GPU's prompt; the expert step, which it cannot, 47%"
+ },
+ "the_expert_multiplies_after_a_zest_piece": {
+  "what": "ms per gate/up MUL_MAT_ID op (two a layer, the first ops to read the normed activations zest's second piece of a layer wrote), by how zest was run",
+  "gpu_alone": 3.82,
+  "zest": 8.42,
+  "zest_by_layer": "bimodal: 4.5-5.0 in a quarter of the layers, 9-12.6 in the rest",
+  "zest_with_2_host_threads": 7.97,
+  "zest_without_the_router_multiply": 8.37,
+  "zest_claiming_only_multiplies_so_the_gpu_makes_those_activations": 4.00,
+  "zest_split_50": 5.58,
+  "zest_split_25": 4.27,
+  "zest_with_glibc_non_temporal_threshold_1_mb": 4.23,
+  "zest_gpu_copies_results": 4.08,
+  "zest_flush_then_gpu_copies": 4.11,
+  "other_ops_under_zest": "attention 4.83 against 4.35 ms (its inputs q, 34 MB, and k and v, 4 MB each); the down multiplies and the rest unchanged",
+  "reading": "zest wrote its results with ggml_backend_tensor_set, a memcpy into Vulkan's mapped memory. glibc's memcpy uses ordinary stores under 24 MB here (x86_non_temporal_threshold 0x1800000) and non-temporal ones from there; this model's results are 17 MB tensors. After an ordinary-store copy the GPU's next read of the tensor is slow. The GPU's clock is not it (sampled at 2 kHz it only follows how busy the GPU is), nor the host's threads."
+ },
+ "prefill_tokens_s_pp2048": {
+  "coder30": {
+   "gpu_alone": "1719.2 (1718.3-1720.1)",
+   "zest_a87d2ae": "1086.6 (1064.1-1110.8)",
+   "split_75_50_25": ["1194.4 (1185.8-1211.5)", "1399.7 (1375.7-1422.6)", "1562.9 (1555.0-1569.4)"],
+   "without_the_router": "1098.7 (1052.5-1098.9)",
+   "q_and_o_only": "1051.4 (1009.5-1059.0)",
+   "multiplies_only": "1177.1 (1173.5-1179.4)",
+   "non_temporal_from_1_mb": {"zest": "1313.1 (1312.7-1313.4)", "split_50": "1574.2 (1573.8-1584.3)", "split_25": "1608.1 (1606.9-1610.0)"},
+   "copy_by_memcpy_gpu_flush_then_gpu": {"zest": ["1059.0 (1022.3-1089.5)", "1446.5 (1445.3-1447.6)", "1412.0 (1405.2-1414.4)"], "split_25": ["1565.0 (1557.7-1571.3)", "1619.8 (1618.9-1623.1)", "1607.1 (1606.2-1616.0)"]}
+  },
+  "q36_35b": {
+   "gpu_alone": "1364.1 (1361.9-1366.4)",
+   "zest_a87d2ae": "693.7 (689.2-697.1)",
+   "split_50": "904.8 (892.5-913.6)",
+   "non_temporal_from_1_mb": {"zest": "988.9 (988.5-994.0)", "split_50": "1210.6 (1204.7-1211.9)"},
+   "copy_by_memcpy_gpu_flush_then_gpu": {"zest": ["743.8 (703.4-769.6)", "1081.8 (1080.4-1082.7)", "1057.3 (1056.5-1059.1)"], "split_50": ["925.9 (917.6-959.3)", "1257.2 (1244.6-1263.9)", "1186.4 (1180.4-1190.0)"]}
+  },
+  "q35_9b": {
+   "gpu_alone": "1079.1 (1077.5-1080.1)",
+   "non_temporal_from_1_mb": {"zest": "985.5 (985.1-987.4)", "split_50": "1365.2 (1362.6-1366.9)"},
+   "copy_by_memcpy_gpu_flush_then_gpu": {"zest": ["986.3 (981.1-986.7)", "1046.7 (1044.4-1048.5)", "1037.1 (1036.3-1037.4)"], "split_50": ["1329.3 (1320.2-1332.0)", "1407.5 (1405.4-1411.2)", "1371.6 (1368.5-1374.5)"]}
+  },
+  "q35_2b": {
+   "gpu_alone": "3452.4 (3448.8-3461.8)",
+   "zest_a87d2ae": "3064.6 (3059.5-3079.7)",
+   "split_50": "3995.7 (3960.0-4068.8)",
+   "non_temporal_from_1_mb": {"zest": "3069.6 (3058.0-3074.1)", "split_50": "4058.0 (4040.8-4060.2)"}
+  },
+  "q38_27b": {
+   "gpu_alone": "344.4 (343.0-345.7)",
+   "non_temporal_from_1_mb": {"zest": "323.1 (322.9-327.8)", "split_50": "436.2 (435.4-436.7)"},
+   "copy_by_memcpy_gpu_flush_then_gpu": {"zest": ["323.1 (320.3-323.9)", "341.0 (340.5-341.0)", "338.8 (337.7-339.4)"], "split_50": ["428.7 (428.6-429.8)", "441.5 (440.6-447.8)", "445.1 (439.2-445.2)"]}
+  },
+  "note": "the three copy methods are one build with a switch (not kept): ggml's memcpy, a GPU copy from the piece's pinned memory, and that after flushing the source from the CPU's caches. The GPU alone was not rerun in that series; its figures are from ten minutes earlier."
+ },
+ "seconds_in_zest_pieces_per_prompt_coder30": {
+  "memcpy": {"in_pieces": 0.58, "waiting_on_npu": 0.12, "host_passes": 0.18, "write_results": 0.19, "read_inputs": 0.06},
+  "gpu_copy": {"in_pieces": 0.44, "waiting_on_npu": 0.12, "host_passes": 0.18, "write_results": 0.06, "read_inputs": 0.05},
+  "the_gpu_needs_for_the_same_work": 0.24,
+  "pieces_per_prompt": 97
+ },
+ "pieces_with_no_multiply_q36_35b": {"per_prompt": 29, "of": 250, "ms_each_on_the_host": 2.7},
+ "npu_calls_of_an_experts_size_ms": {
+  "method": "the BFP16 kernel on 512 and 1,024 rows, median of 15, while another session's job had the GPU at 100% (so about a fifth slow)",
+  "gate_up_fused_2048_to_1536": {"512_rows": 0.40, "1024_rows": 0.62},
+  "down_768_to_2048": {"512_rows": 0.26, "1024_rows": 0.37},
+  "q_2048_to_4096": {"512_rows": 0.64, "1024_rows": 1.12},
+  "reading": "a pass of 512 (token, expert) rows through an expert costs about 0.66 ms, and a layer has 16,384 of them: 21 ms if every pass were full, against 12 ms for the GPU's expert step. The kernel also gives every column the same weights, so each expert (128 rows on average) would need its own passes. The NPU cannot take the expert step at a gain with this kernel."
+ },
+ "the_build_this_record_comes_with": {
+  "when": "09:27-09:45 and 10:18, the GPU and the NPU held; load average 1-2 (6 at the end of the first run)",
+  "tests": "all 11 host and 15 NPU tests pass, with two new ones: bare-piece-npu (small ops with no multiply go to the GPU and give the CPU's results; the GPU's rotary step is within 1.2e-4 of the CPU's, ours within 1e-5) and ffn-block-npu-unpinned (the block with the piece's memory not pinned)",
+  "prefill_tokens_s_pp2048": {
+   "method": "the same bench, n=3; each model's four figures within two minutes of each other",
+   "coder30": {"gpu_alone": "1711.5 (1707.7-1715.8)", "zest": "1446.2 (1440.8-1448.4)", "split_25": "1631.3 (1629.1-1635.5)", "split_50": "1645.4 (1635.8-1648.7)"},
+   "q35_2b": {"gpu_alone": "3439.6 (3437.3-3453.6)", "zest": "3309.7 (3301.2-3321.1)", "split_25": "3749.6 (3749.4-3759.6)", "split_50": "4317.2 (4314.9-4326.3)"},
+   "q38_27b": {"gpu_alone": "343.9 (342.7-346.2)", "zest": "340.0 (339.9-340.3)", "split_25": "381.1 (380.0-382.1)", "split_50": "448.7 (448.2-448.9)"},
+   "q36_35b": {"gpu_alone": ["979.9 (970.3-1001.1)", "986.6 (980.3-1000.3)"], "zest": "903.0 (901.3-907.3)", "split_25": "1027.8 (1025.4-1028.8)", "split_50": "1030.0 (1029.9-1030.2)"},
+   "q35_9b": {"gpu_alone": ["907.3 (906.8-908.2)", "906.8 (904.3-918.0)"], "zest": "871.4 (871.4-871.9)", "split_25": "975.8 (972.7-977.2)", "split_50": "1119.6 (1119.6-1119.8)"}
+  },
+  "the_gpu_alone_moved_on_two_models": "On the 35B and the 9B the GPU alone read 28% and 16% slower from 09:28 on than at 08:40 (980-1,000 against 1,364; 893-907 against 1,079), with zest's figures down with it, while the 30B, the 2B and the 27B stayed where they were. It is not zest: at 10:18 the 9B gave 915, 915 and 919 with the build before, this build and no zest loaded, and the 35B 1,062 and 1,065. Not explained (the machine's memory had changed hands between other sessions' jobs in between). So on those two models only figures from one sitting compare, and the table above is that; the earlier sections' zest figures for them belong with the 08:40 GPU figures.",
+  "kl_one_2048_token_sequence_per_batch": {
+   "coder30": {"zest": {"mean_kld": 0.004523, "max_kld": 0.141031, "same_top_pct": 96.285}, "split_50": {"mean_kld": 0.003472, "max_kld": 0.08422, "same_top_pct": 96.237}, "note": "the same to the last digit as the build before"},
+   "q36_35b": {"zest": {"mean_kld": 0.009031, "max_kld": 0.422601, "same_top_pct": 94.673}, "split_50": {"mean_kld": 0.006039, "max_kld": 0.135634, "same_top_pct": 95.748}},
+   "q35_9b": {"zest": {"mean_kld": 0.004125, "max_kld": 0.068638, "same_top_pct": 96.139}, "split_50": {"mean_kld": 0.002434, "max_kld": 0.023753, "same_top_pct": 96.041}, "note": "the same to the last digit as the build before"},
+   "q38_27b": {"zest": {"mean_kld": 0.003316, "max_kld": 0.14205, "same_top_pct": 96.872}, "split_50": {"mean_kld": 0.002547, "max_kld": 0.040274, "same_top_pct": 96.97}, "note": "0.003388 and 0.002514 on the build before: 8 of the 27B's 218 pieces a prompt have no multiply and are the GPU's now"},
+   "npu_failures": 0
+  },
+  "pieces_with_no_multiply": {"q36_35b": "29 of 250 a prompt, 0.4 ms each on the GPU (2.7 on the host)", "q38_27b": "8 of 218 a prompt", "coder30": "none"},
+  "with_the_split_on_by_default": {
+   "when": "11:08-11:12, the GPU and the NPU held; other sessions' CPU work took the load average from 2 to 8 during the run",
+   "tests": "all 11 host and 16 NPU tests pass (the block test now requires the piece to be shared with nothing set; ffn-block-npu-whole runs it with the split off)",
+   "q38_27b": {"gpu_alone": "344.0 (340.5-344.6)", "as_shipped": ["429.4 (416.8-431.3), traced: 210 pieces a prompt shared", "380.4 (337.9-413.6)"], "split_off": "339.9 (339.7-340.2)"},
+   "coder30": {"gpu_alone": "1706.8 (1692.8-1710.4)", "as_shipped": ["1617.2 (1613.9-1619.1)", "1620.8 (1616.6-1627.8)"], "split_off": "1425.3 (1413.8-1425.5)"},
+   "note": "the 27B's figures with the split are below the 448.7 of 09:31 and spread out, while the GPU alone and the split-off figures are where they were: with the split the host's passes and the GPU's share run at once, and both want the CPU, which other sessions were using here"
+  },
+  "seconds_in_zest_pieces_per_prompt": {"coder30": {"in_pieces": 0.43, "waiting_on_npu": 0.12, "host_passes": 0.18, "write_results": 0.06, "read_inputs": 0.05}, "q36_35b": {"in_pieces": 0.66, "waiting_on_npu": 0.23, "host_passes": 0.23, "write_results": 0.10, "read_inputs": 0.08}}
+ },
+ "findings": [
+  "On a mixture-of-experts model zest lost to the GPU alone (0.63x on the 30B, 0.51x on the 35B) for two reasons. More than half of the loss was not zest's own time: the GPU's expert multiplies ran at less than half speed after zest's pieces, because of how zest's results were copied into Vulkan's memory.",
+  "With the GPU doing that copy, zest reads the 30B at 0.84x the GPU alone (0.96x with the split at 50%) and the 35B at 0.79x at 08:45 and 0.92x at 09:42, when the GPU alone was itself slower on that model (0.92x and 1.05x with the split). Dense models gain 3-8%: the 27B without the split is at 340 against 344 for the GPU alone, and at 449 with it.",
+  "What is left is structure: the NPU can take a fifth of this model's work, in pieces of 4.5 ms that the GPU does in 2.4 ms, and at this width (2,048) the kernel's calls are about a millisecond, where its fixed costs show (15 TFLOPS against 25 on the 27B)."
+ ]
+}

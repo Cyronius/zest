@@ -17,7 +17,7 @@
 
 namespace ref {
 
-// ---- from kernels/bfp16_gemm/bench_bfp16.cpp, unchanged ---------------------
+// ---- from kernels/bfp16_gemm/bench_bfp16.cpp, with the NPU's +128 rule ------
 static std::vector<uint8_t> floatToBfp16Rne(int size, const float * x) {
     std::vector<uint8_t> r((size_t) size / 8 * 9);
     for (int b = 0; b < size / 8; b++) {
@@ -27,6 +27,12 @@ static std::vector<uint8_t> floatToBfp16Rne(int size, const float * x) {
             memcpy(&u, &x[b * 8 + i], 4);
             maxe = std::max(maxe, (u >> 23) & 0xFF);
         }
+        // a value that rounds up to +128: the block one exponent up
+        for (int i = 0; i < 8; i++)
+            if (std::nearbyint(std::ldexp((double) x[b * 8 + i], 133 - (int) maxe)) > 127.0) {
+                maxe++;
+                break;
+            }
         r[(size_t) b * 9] = (uint8_t) maxe;
         for (int i = 0; i < 8; i++) {
             double q = std::nearbyint(std::ldexp((double) x[b * 8 + i], 133 - (int) maxe));
@@ -73,7 +79,7 @@ static std::vector<uint8_t> linB(int N, int K, int n, int k, int cols, const std
 
 // Values spanning many exponents inside each block of eight, including the
 // cases that matter for rounding: exact zeros, ties, and maxima that round up
-// to +128 and must saturate.
+// to +128 and step the block's exponent up.
 static std::vector<float> make_data(size_t n, uint32_t seed) {
     std::mt19937 eng(seed);
     std::normal_distribution<float> nd(0.0f, 1.0f);
@@ -98,11 +104,12 @@ int main() {
     };
 
     struct shape { int M, K, m, k; };
-    for (const shape s : { shape{ 512, 256, 128, 64 }, shape{ 256, 384, 64, 128 }, shape{ 1024, 6144, 128, 64 } }) {
+    for (const shape s : { shape{ 512, 256, 128, 64 }, shape{ 256, 384, 64, 128 }, shape{ 1024, 6144, 128, 64 },
+                           shape{ 512, 5120, 64, 64 } }) {
         const std::vector<float> x = make_data((size_t) s.M * s.K, 1 + s.M + s.K);
         const std::vector<uint8_t> want = ref::linA(s.M, s.K, s.m, s.k, ref::floatToBfp16Rne(s.M * s.K, x.data()));
         std::vector<uint8_t> got;
-        bfp16_tiling t;
+        bfp16_tiling t = BFP16_TILE;
         t.m = s.m; t.k = s.k;
         bfp16_pack_a(x.data(), s.M, s.K, t, got, 8);
         char what[128];
@@ -120,6 +127,14 @@ int main() {
             bfp16_a_row(r, s.K, t, [&](int64_t cb, size_t off) { bfp16_encode_block(x.data() + (size_t) r * s.K + cb * 8, placed.data() + off); });
         snprintf(what, sizeof(what), "activations %dx%d: blocks encoded at bfp16_a_row's offsets give the same bytes", s.M, s.K);
         check(placed == want, what);
+        std::fill(placed.begin(), placed.end(), 0);
+        for (int r0 = 0; r0 < s.M; r0 += 8) {
+            const float * rows[8];
+            for (int i = 0; i < 8; i++) rows[i] = x.data() + (size_t) (r0 + i) * s.K;
+            bfp16_pack_a_tile_rows(rows, r0, 8, s.K, t, placed.data());
+        }
+        snprintf(what, sizeof(what), "activations %dx%d: eight-row contiguous writes give the same bytes", s.M, s.K);
+        check(placed == want, what);
 
         std::vector<float> back((size_t) s.M * s.K);
         bfp16_unpack_a(got.data(), s.M, s.K, t, back.data());
@@ -132,17 +147,26 @@ int main() {
 
     struct wshape { int N, K, n, k, cols; };
     for (const wshape s : { wshape{ 1024, 256, 64, 64, 8 }, wshape{ 4096, 2048, 64, 64, 8 }, wshape{ 2048, 6144, 64, 128, 8 },
-                            wshape{ 512, 128, 32, 64, 4 } }) {
+                            wshape{ 512, 128, 32, 64, 4 }, wshape{ 2048, 1024, 128, 64, 4 } }) {
         const std::vector<float> w = make_data((size_t) s.N * s.K, 7 + s.N + s.K);
         const std::vector<uint8_t> want = ref::linB(s.N, s.K, s.n, s.k, s.cols, ref::floatToBfp16Rne(s.N * s.K, w.data()));
         std::vector<uint8_t> got;
-        bfp16_tiling t;
+        bfp16_tiling t = BFP16_TILE;
         t.n = s.n; t.k = s.k; t.cols = s.cols;
         bfp16_pack_b(w.data(), s.N, s.K, t, got, 8);
         char what[128];
         snprintf(what, sizeof(what), "weights %dx%d, tile n=%d k=%d, %d columns: identical to the kernel's reference layout", s.N, s.K,
                  s.n, s.k, s.cols);
         check(got == want, what);
+
+        std::vector<uint8_t> by_rows(got.size());
+        bfp16_pack_b_rows_into(s.N, s.K, t, by_rows.data(),
+                               [](int64_t n, const std::function<void(int64_t, int64_t)> & fn) { fn(0, n); },
+                               [&](int64_t r, float * row) {
+                                   memcpy(row, w.data() + (size_t) r * s.K, (size_t) s.K * sizeof(float));
+                               });
+        snprintf(what, sizeof(what), "weights %dx%d: row-wise packing matches the full-weight layout", s.N, s.K);
+        check(by_rows == want, what);
 
         std::vector<uint8_t> placed(got.size());
         for (int r = 0; r < s.N; r++)
@@ -164,14 +188,116 @@ int main() {
         check(memcmp(back.data(), dec.data(), back.size() * 4) == 0, what);
     }
 
-    // The saturation case on its own: a block whose maximum rounds up to +128.
+    // The direct loader's row selection for a fused gate/up weight must
+    // preserve the kernel's eight-gate, eight-up order.
+    {
+        constexpr int F = 512, K = 256;
+        const bfp16_tiling t = BFP16_TILE;
+        const std::vector<float> gate = make_data((size_t) F * K, 91);
+        const std::vector<float> up = make_data((size_t) F * K, 92);
+        std::vector<float> interleaved((size_t) 2 * F * K);
+        bfp16_interleave_gate_up(gate.data(), up.data(), F, K, interleaved.data());
+        std::vector<uint8_t> want;
+        bfp16_pack_b(interleaved.data(), 2 * F, K, t, want, 4);
+        std::vector<uint8_t> got(want.size());
+        bfp16_pack_b_rows_into(2 * F, K, t, got.data(),
+                               [](int64_t n, const std::function<void(int64_t, int64_t)> & fn) { fn(0, n); },
+                               [&](int64_t r, float * row) {
+                                   const int64_t source_row = (r / 16) * 8 + r % 8;
+                                   const float * src = (r % 16 < 8 ? gate.data() : up.data()) + source_row * K;
+                                   memcpy(row, src, K * sizeof(float));
+                               });
+        check(got == want, "fused gate/up row-wise packing preserves the eight-row interleave");
+    }
+
+    // The BFP16 kernel's output, as its epilogue lays each mode out: a tile's
+    // 8x8 blocks in order, each row-major, packed from the tile's front, the
+    // tiles row block by row block. Built here from a known result and read
+    // back with bfp16_tile_row.
+    {
+        const bfp16_tiling & t = BFP16_TILE;
+        constexpr int M = 128, N = 512, F = N / 2;
+        const std::vector<float> full = make_data((size_t) M * N, 301), fused = make_data((size_t) M * F, 302);
+        auto bf16 = [](float v) {
+            uint32_t u;
+            memcpy(&u, &v, 4);
+            return (uint16_t) (u >> 16);
+        };
+        auto as_float = [](uint16_t h) {
+            const uint32_t u = (uint32_t) h << 16;
+            float v;
+            memcpy(&v, &u, 4);
+            return v;
+        };
+        for (int mode = 0; mode < 3; mode++) {
+            const int width = mode == 2 ? F : N, across = (mode == 2 ? t.n / 2 : t.n) / 8;
+            const std::vector<float> & src = mode == 2 ? fused : full;
+            std::vector<uint8_t> c(bfp16_c_bytes(M, N, t, mode));
+            const size_t tile_bytes = bfp16_tile_words(t, mode) * 4;
+            for (int rb = 0; rb < M / t.m; rb++)
+                for (int ct = 0; ct < N / t.n; ct++)
+                    for (int z = 0; z < t.m / 8; z++)
+                        for (int j = 0; j < across; j++)
+                            for (int i = 0; i < 64; i++) {
+                                const float v = src[(size_t) (rb * t.m + z * 8 + i / 8) * width + ct * across * 8 + j * 8 + i % 8];
+                                uint8_t * at = c.data() + ((size_t) rb * (N / t.n) + ct) * tile_bytes;
+                                const size_t e = (size_t) (z * across + j) * 64 + i;
+                                if (mode == 0) memcpy(at + e * 4, &v, 4);
+                                else {
+                                    const uint16_t h = bf16(v);
+                                    memcpy(at + e * 2, &h, 2);
+                                }
+                            }
+            bool ok = true;
+            std::vector<float> row((size_t) width);
+            for (int r = 0; r < M; r++) {
+                bfp16_tile_row(c.data(), N, t, mode, r, row.data());
+                for (int x = 0; x < width; x++) {
+                    const float v = src[(size_t) r * width + x];
+                    ok = ok && row[x] == (mode == 0 ? v : as_float(bf16(v)));
+                }
+            }
+            char what[96];
+            snprintf(what, sizeof(what), "output mode %d: bfp16_tile_row reads every row of the kernel's layout", mode);
+            check(ok, what);
+        }
+
+        // Mode 3: the kernel packs each pair's 8x8 results (rows of 8 along
+        // the next K) as eight blocks on 72-byte slot (z / 2 * PJ + j) * 2 +
+        // z % 2 of its tile (mm_bfp_acc.cc, pack_chain). That must be the next
+        // multiply's A operand, byte for byte.
+        std::vector<uint8_t> c(bfp16_c_bytes(M, N, t, 3)), want;
+        const int PJ = t.n / 16;
+        for (int rb = 0; rb < M / t.m; rb++)
+            for (int ct = 0; ct < N / t.n; ct++)
+                for (int z = 0; z < t.m / 8; z++)
+                    for (int j = 0; j < PJ; j++)
+                        for (int i = 0; i < 8; i++)
+                            bfp16_encode_block(fused.data() + (size_t) (rb * t.m + z * 8 + i) * F + ct * (t.n / 2) + j * 8,
+                                               c.data() + ((size_t) rb * (N / t.n) + ct) * bfp16_tile_words(t, 3) * 4 +
+                                                   (size_t) ((z / 2 * PJ + j) * 2 + z % 2) * 72 + (size_t) i * 9);
+        bfp16_pack_a(fused.data(), M, F, t, want, 4);
+        check(c == want, "output mode 3: the kernel's packing is the next multiply's A operand, byte for byte");
+    }
+
+    // A block whose maximum rounds up to +128 (measured on the NPU's
+    // accumulator -> bfp16ebs8 conversion): rounded again from the values at
+    // exponent byte 128, so q = value * 32. Without it, -127.5 rounds to -128
+    // and 100.5 ties to even 100.
     {
         float blk[8] = { 127.75f, 1.0f, -3.5f, 0.0f, 64.0f, -127.5f, 0.25f, 100.5f };
         for (float & v : blk) v = std::ldexp(v, -6);  // exponent byte 127, so q = value * 64 before rounding
         uint8_t enc[9];
         bfp16_encode_block(blk, enc);
-        check(enc[0] == 127 && (int8_t) enc[1] == 127 && (int8_t) enc[6] == -128 && (int8_t) enc[8] == 100,
-              "a maximum that rounds up to +128 saturates at 127; -127.5 rounds to -128; 100.5 ties to even");
+        const int want[8] = { 64, 0, -2, 0, 32, -64, 0, 50 };
+        bool ok = enc[0] == 128;
+        for (int i = 0; i < 8; i++) ok = ok && (int8_t) enc[1 + i] == want[i];
+        check(ok, "a maximum that rounds up to +128 steps the exponent up and rounds the block again");
+        float neg[8] = { -127.75f, 1.0f, -3.5f, 0.0f, 64.0f, 2.5f, 0.25f, 100.5f };
+        for (float & v : neg) v = std::ldexp(v, -6);
+        bfp16_encode_block(neg, enc);
+        check(enc[0] == 127 && (int8_t) enc[1] == -128 && (int8_t) enc[6] == 2 && (int8_t) enc[8] == 100,
+              "-127.75 rounds to -128 at the same exponent; 2.5 and 100.5 tie to even");
     }
 
     // Decoding against plain arithmetic, every exponent byte, mantissas

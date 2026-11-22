@@ -1,0 +1,352 @@
+{
+  "date": "2026-11-14",
+  "machine": "Ryzen AI MAX+ 395 / Radeon 8060S (40 CUs, RDNA3.5) / XDNA2, 128 GB, CachyOS, Linux 7.3.4",
+  "gpu_driver": "Mesa 26.2.6 RADV (KHR_coopmat, wave64); power profile balanced; GPU held about 2.8 GHz at about 128 W during prefill",
+  "model": "Qwen3.8-27B UD-IQ3_S (qwen35: 48 Gated DeltaNet + 16 attention layers)",
+  "prompt": "docs/results/headline-models-2026-10-21/qwen38-27b.json request: 2,769 tokens, cache_prompt false, 16 reply tokens",
+  "backends": {
+    "release": "llama.cpp b10944 Linux Vulkan release, libggml-vulkan.so sha256 c25c5ac2bed23bc11351b51f2303084be82c9d1419061c9fae1bfd938b869e06",
+    "patched": "same release with libggml-vulkan.so from tools/build-vulkan.sh (patches/llama.cpp-b10944/vulkan-rdna3-prefill.patch); final build sha256 07f0a3319573a2b24aabfc01b0fb470f7c6c9d091ac6661bfe48db7571aece51. Earlier tables used builds from earlier steps of the same patch"
+  },
+  "changes": [
+    "RDNA3 coopmat matmul on GPUs with 32 or more compute units: shared-memory row pad 2 instead of 4 (8-byte aligned rows, more workgroups per WGP)",
+    "RDNA3 coopmat quant matmul on GPUs with 32 or more compute units: extra 128x256 tile where 512 threads multiply and 256 producer threads load and dequantize the next tile into a second buffer; chosen unless padding N to 256 costs more than 15% beyond padding it to 128",
+    "The 128x128 coopmat quant tile also gets 256 producer threads on those GPUs: IQ2_S +20-22% (22-24 to 27-28 TFLOPS), shapes that pick it (128 or 384 tokens) +4% to +40%, others unchanged",
+    "Wider weight loaders for every GPU: IQ3_S, IQ3_XXS and IQ4_XS unpack 8 values per call instead of 4, Q4_K and Q5_K 8 instead of 4, Q3_K and Q6_K 4 instead of 2, sharing the scale, sign and index work. Same arithmetic, so results are identical (perplexity 1.8734 before and after). Kernel gains on the 8060S: IQ3_S +3-8%, IQ3_XXS +1-4%, IQ4_XS about 0, Q3_K +13%, Q4_K +8-14%, Q5_K +3%, Q6_K +9%",
+    "Shared-memory check counts the coopmat stage per consumer subgroup, so tiles that do not fit (IQ2_S, IQ1 lookup tables) fall back",
+    "CONCAT on dim 0 with a transposed second input (Gated DeltaNet conv state + activations) runs as two copies, the second through the tiled transpose copy",
+    "On UMA, tensor reads take the CPU memcpy shortcut only from host-cached memory; uncached device memory is copied by the GPU into cached staging first (llama.cpp master has the same fix for AMD)",
+    "zest launcher: on a Radeon 8060S or 8050S it adds -dev Vulkan0 and, for chat programs, -ub 256 -b 2048"
+  ],
+  "server": {
+    "method": "llama-server with Lemonade's command line (--ctx-size 8192 --device Vulkan0 --jinja --metrics -ts 1 -b 2048 --flash-attn on --parallel 1, -ub as listed), one warm-up then 3 requests per start, two alternating rounds inside dibs run --measure (CLEAN before and after). lemond itself was not run: its libwebsockets dependency is missing on this install",
+    "runs": [
+      {
+        "backend": "release",
+        "ubatch": 2048,
+        "prompt_tokens_s": [
+          325.6,
+          334.7,
+          337.5,
+          319.0,
+          319.1,
+          319.2
+        ]
+      },
+      {
+        "backend": "patched",
+        "ubatch": 2048,
+        "prompt_tokens_s": [
+          422.9,
+          427.7,
+          430.6,
+          423.2,
+          424.1,
+          425.5
+        ]
+      },
+      {
+        "backend": "patched",
+        "ubatch": 256,
+        "prompt_tokens_s": [
+          447.1,
+          450.3,
+          452.6,
+          448.7,
+          449.1,
+          450.1
+        ]
+      }
+    ],
+    "median_tokens_s": {
+      "release_ub2048": 322.4,
+      "patched_ub2048": 424.8,
+      "patched_ub256": 449.6
+    },
+    "median_ratio_patched_ub256_to_release_ub2048": 1.39,
+    "median_ratio_patched_ub2048_to_release_ub2048": 1.32,
+    "reply": "identical text in every run: \"A harbor town's decline from a bustling trade hub to a quiet fishing spot was\"",
+    "earlier_unquiet_sitting": "release ub 2048 281.6; patched ub 2048 421.3; patched ub 256 464.2 (not CLEAN-checked; the release's figure moves most between sittings)",
+    "release_ubatch_sitting": {
+      "method": "second dibs run --measure sitting (CLEAN before and after), release backend only, alternating ubatch",
+      "runs": [
+        {
+          "backend": "release",
+          "ubatch": 2048,
+          "prompt_tokens_s": [
+            321.3,
+            328.4,
+            332.6,
+            319.0,
+            319.6,
+            320.2
+          ]
+        },
+        {
+          "backend": "release",
+          "ubatch": 256,
+          "prompt_tokens_s": [
+            347.2,
+            347.2,
+            347.5,
+            345.2,
+            345.5,
+            345.5
+          ]
+        }
+      ],
+      "median_tokens_s": {
+        "release_ub2048": 320.8,
+        "release_ub256": 346.4
+      },
+      "median_ratio": 1.08,
+      "note": "what the launcher's -ub 256 gives without the patched Vulkan backend"
+    },
+    "installed_final_build": {
+      "method": "third_party/llama-b10944 with the final libggml-vulkan.so (the folder Lemonade's config runs), dibs run --measure, CLEAN",
+      "runs": [
+        {
+          "ubatch": 256,
+          "prompt_tokens_s": [
+            451.4,
+            466.6,
+            476.1
+          ]
+        },
+        {
+          "ubatch": 2048,
+          "prompt_tokens_s": [
+            418.7,
+            419.3,
+            420.8
+          ]
+        }
+      ],
+      "reply": "same text as every other run"
+    },
+    "final_build": {
+      "method": "third_party/llama-b10944 with the final SDK-built libggml-vulkan.so, -ub 256, dibs run --measure CLEAN",
+      "prompt_tokens_s": [
+        460.0,
+        473.3,
+        482.5
+      ],
+      "median": 473.3,
+      "correctness": "test-backend-ops with this exact library: full suite 19943/19943 (MUL_MAT 2184, MUL_MAT_ID 921, CONCAT 320 among them)"
+    },
+    "wider_loaders": {
+      "method": "third_party/llama-b10944 with the patched library, -ub 256 unless noted, dibs run --measure CLEAN",
+      "after_8wide_iq": {
+        "ub256": [
+          484.9,
+          498.1,
+          502.0
+        ],
+        "ub2048": [
+          443.8,
+          452.1
+        ]
+      },
+      "after_all_loaders_final_build": {
+        "ub256": [
+          479.0,
+          486.2,
+          488.2
+        ],
+        "ub2048": [
+          450.6,
+          451.2
+        ]
+      },
+      "note": "separate sittings; the second adds only K-quant loader changes, so the difference is sitting-to-sitting variation"
+    }
+  },
+  "context_checkpoints": {
+    "what": "llama-server saves the recurrent state (149.6 MiB) twice near the end of each prompt so later turns can resume",
+    "release_checkpoint_s": [
+      1.18,
+      1.25
+    ],
+    "patched_checkpoint_s_including_wait_for_previous_batch": [
+      0.52,
+      0.56
+    ],
+    "patched_ub256_prompt_tokens_s_with_checkpoints_off": 485.5,
+    "release_cause": "CPU memcpy from uncached (write-combined) device-local memory, about 125 MB/s"
+  },
+  "llama_bench": {
+    "method": "llama-bench -dev Vulkan0 -fa on -b 2048, same sitting per table",
+    "pp2769": [
+      {
+        "backend": "release",
+        "ub256": 354.15,
+        "ub512": 348.3,
+        "ub1024": 327.56,
+        "ub2048": 320.19
+      },
+      {
+        "backend": "patched",
+        "ub256": 457.89,
+        "ub512": 446.49,
+        "ub1024": 436.08,
+        "ub2048": 432.05
+      },
+      {
+        "backend": "llama.cpp master 3549c27 (2026-11-14), unpatched",
+        "ub256": 381.62,
+        "ub512": 375.11,
+        "ub2048": 372.54
+      }
+    ],
+    "pp8192": [
+      {
+        "backend": "release",
+        "ub512": 329.99,
+        "ub2048": 301.05
+      },
+      {
+        "backend": "patched",
+        "ub256": 448.51,
+        "ub512": 420.85,
+        "ub1024": 398.01,
+        "ub2048": 394.92
+      }
+    ],
+    "tg64": {
+      "release": 17.1,
+      "patched": 17.02
+    },
+    "pp8192_final_build_ub256": 480.36
+  },
+  "matmul_tflops": {
+    "method": "test-backend-ops perf, MUL_MAT f32 activations, n = 2048 tokens unless stated",
+    "release": {
+      "iq3_s 17408x5120": 20.6,
+      "iq3_s 5120x17408": 20.8,
+      "iq4_xs 17408x5120": 21.3,
+      "q4_0 17408x5120": 22.2
+    },
+    "patched": {
+      "iq3_s 17408x5120": 28.2,
+      "iq3_s 5120x17408": 27.7,
+      "iq4_xs 17408x5120": 29.4,
+      "q4_0 17408x5120": 31.6
+    },
+    "ceiling_probe": "with global loads removed the coopmat loop reached 33-35 TFLOPS (f16 accumulate) and 34-39 (f32); peak WMMA at 2.8 GHz is about 57"
+  },
+  "profile_patched_ub256": "GPU time: matmul 86.6%, GLU 3.2%, flash attention 2.4%, RMS norm 2.0%, Gated DeltaNet 1.7%, everything else under 1.1% each",
+  "correctness": {
+    "test_backend_ops_vulkan": "19943/19943 passed with the final build",
+    "mul_mat": "2184/2184 passed, including local cases that pick the new tile for every quant type, with ragged edges",
+    "mul_mat_id": "921/921 passed",
+    "perplexity_512_ctx_on_the_prompt": {
+      "release_ub256": 1.877,
+      "release_ub512": 1.8748,
+      "patched_ub256": 1.8734,
+      "patched_ub512": 1.8726,
+      "error": 0.089
+    },
+    "perplexity_final_build_ub256": 1.8734
+  },
+  "npu": "NPU-assisted prefill measured 221-255 tokens/s against 258-300 for the release GPU alone (halo-zest-qwen38-27b-2026-11-13.json). This branch's GPU-only default and Vulkan patch were withdrawn on 2026-11-15 (kept on branch parked/halo-vulkan-prefill-2026-11-14): the NPU path is to be reworked instead. Correction: hipfire killed only a bit-exact dense-27B co-op design; it ships an NPU prefill route on Halo for its Flash-Next model, and yet-another-halo-engine's GPU+NPU output-column split prefills UD-IQ4_XS 1.18x faster than its GPU alone.",
+  "explored_without_gain": [
+    "f32 instead of f16 accumulation: removes 128 half-register copies per 32 matrix ops but measured a tie at -ub 256 (464 vs 465) and +1.6% at 2048",
+    "other tile shapes for the producer kernel (256 consumers of 128x64, 64x128 per warp, 128 producers, 64x256 tiles): all within about 1% or slower",
+    "two-tile register prefetch of IQ3_S raw blocks in the producers: the 768-thread workgroup caps waves at 120 VGPRs and the 128x256 shaders already need 118, so the prefetch spilled and ran at 6-19 TFLOPS",
+    "wave32 compute (RDNA3 default subgroup size 32): no change",
+    "producers and consumers in separate loops (warp specialization) with two-tile prefetch: no spills (112 VGPRs) but IQ3_S 6% slower; unpacking costs vector-unit and shared-memory throughput, not latency",
+    "ROCm/HIP backend (see rocm_comparison): 385 tok/s through the server against 454-473 for the patched Vulkan backend"
+  ],
+  "headroom": "With producers idle after the first tile the consumers reach 33-36 TFLOPS against 28-30 in full: unpacking the weights is the limit, and the register file blocks deeper prefetch in this kernel design",
+  "rocm_comparison": {
+    "backend": "lemonade-sdk/llamacpp-rocm b1376 (llama.cpp 4f2187e, ROCm 10.3.0a20261113, gfx1151 only), the build Lemonade's llamacpp_backend rocm uses; llama.cpp's own b10944 ROCm 10.0 release needs a system ROCm, which this machine lacks",
+    "llama_bench_pp2769": {
+      "ub256": 408.89,
+      "ub512": 393.13,
+      "ub2048": 380.95,
+      "ub512_ROCBLAS_USE_HIPBLASLT": 391.76
+    },
+    "server": {
+      "method": "llama-server with Lemonade's arguments (--device ROCm0 for ROCm), dibs run --measure, CLEAN, two alternating rounds",
+      "runs": [
+        {
+          "backend": "patched Vulkan",
+          "ubatch": 256,
+          "prompt_tokens_s": [
+            448.0,
+            462.0,
+            472.0,
+            445.8,
+            446.6,
+            446.9
+          ]
+        },
+        {
+          "backend": "ROCm",
+          "ubatch": 256,
+          "prompt_tokens_s": [
+            384.7,
+            385.6,
+            386.0,
+            383.8,
+            384.7,
+            384.9
+          ]
+        },
+        {
+          "backend": "ROCm",
+          "ubatch": 2048,
+          "prompt_tokens_s": [
+            374.2,
+            374.3,
+            374.4,
+            372.8,
+            372.9,
+            373.4
+          ]
+        },
+        {
+          "backend": "patched Vulkan",
+          "ubatch": 2048,
+          "prompt_tokens_s": [
+            418.9,
+            419.6
+          ]
+        }
+      ]
+    },
+    "conclusion": "ROCm needs no patch and beats the release Vulkan backend (385 against about 322 through the server), but the patched Vulkan backend is about 18% faster still"
+  },
+  "llama_cpp_master_comparison": {
+    "build": "llama.cpp master 3549c27 (2026-11-14), unpatched, same flags",
+    "pp2769_ub256": [
+      381.62,
+      367.31
+    ],
+    "per_op_vs_b10944_release_ub256_ms": {
+      "matmul": [
+        7087.9,
+        6739.5
+      ],
+      "rms_norm_and_fused": [
+        138.6,
+        82.2
+      ],
+      "concat": [
+        87.1,
+        48.8
+      ],
+      "flash_attn": [
+        134.6,
+        159.1
+      ]
+    },
+    "matmul_tflops_4096x512x14336": {
+      "q4_0": 23.33,
+      "q3_K": 18.62,
+      "q4_K": 20.79,
+      "iq3_s": 18.12
+    },
+    "conclusion": "master's gains over b10944 are a ~5% faster matmul (its new int8 coopmat path and other changes) and under 1% from fused norms; the patched b10944 matmul is well ahead, so porting the patch to master would add about 1% here. The patch does not apply to master as is (all four files changed)"
+  }
+}

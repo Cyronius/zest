@@ -7,8 +7,13 @@
 // Same measure the open_kernels tests use, so numbers here are comparable to
 // the ones in tools/open-kernels/.
 //
-// Run with GGML_XDNA_NAN_AFTER=0 (ctest's mul-mat-npu-nan), every NPU result
+// Run with ZEST_NAN_AFTER=0 (ctest's mul-mat-npu-nan), every NPU result
 // comes back as NaN, and the backend has to catch that and compute it again.
+//
+// When the NPU fails the GPU finishes the work, with the right answers, so
+// the answers alone don't show the NPU ran. The backend's log does: the test
+// fails if it reports an NPU failure that wasn't injected (a kernel that
+// didn't load or run), or none when one was.
 //
 // Traces: XDNA-MUL-MAT-AGREES, XDNA-NPU-RESULT-CHECK
 
@@ -19,6 +24,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <random>
 #include <vector>
@@ -124,7 +130,20 @@ static std::vector<double> reference(const case_spec & c,
     return out;
 }
 
+// Whether the backend said the NPU failed. Everything is still printed.
+static bool g_npu_failed = false;
+static void on_log(ggml_log_level, const char * text, void *) {
+    if (strstr(text, "the NPU failed")) g_npu_failed = true;
+    fputs(text, stderr);
+}
+
+static bool env_set(const char * name) {
+    const char * s = getenv(name);
+    return s && *s;
+}
+
 int main() {
+    ggml_log_set(on_log, NULL);
     ggml_backend_load_all();
 
     ggml_backend_dev_t dev_xdna = ggml_backend_dev_by_name("XDNA0");
@@ -145,7 +164,7 @@ int main() {
         { "q4_K  512x256 x 64",  GGML_TYPE_Q4_K, 512,  256,  64, false },
         { "q4_K 2048x512 x 512", GGML_TYPE_Q4_K, 2048, 512, 512, false },
         { "q6_K  512x256 x 64",  GGML_TYPE_Q6_K, 512,  256,  64, false },
-        // On the NPU when GGML_XDNA_KERNELS names builds of 2048 x 1024.
+        // On the NPU when ZEST_KERNELS names builds of 2048 x 1024.
         // One weight type each: the backend keeps an NPU copy per weight,
         // keyed by where it lives, and a freed buffer's address comes back.
         { "q4_0 2048x1024 x 512 w", GGML_TYPE_Q4_0, 2048, 1024, 512, true },
@@ -202,6 +221,13 @@ int main() {
 
     ggml_backend_free(xdna);
     ggml_backend_free(cpu);
+
+    const bool injected = env_set("ZEST_FAIL_AFTER") || env_set("ZEST_NAN_AFTER");
+    if (g_npu_failed != injected) {
+        printf("FAIL the NPU %s\n", injected ? "was made to fail, and the backend didn't say so"
+                                             : "failed, and the GPU finished its work");
+        failures++;
+    }
 
     printf("%s\n", failures ? "FAILED" : "ALL PASS");
     return failures ? 1 : 0;
