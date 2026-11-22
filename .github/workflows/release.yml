@@ -26,7 +26,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: third_party
-          key: llama-b10944-${{ hashFiles('tools/fetch-llama.ps1') }}
+          key: llama-b12109-${{ hashFiles('tools/fetch-llama.ps1') }}
 
       - name: Vulkan loader and a software Vulkan device
         uses: jakoch/install-vulkan-sdk-action@v1.6.0
@@ -55,7 +55,7 @@ jobs:
         run: |
           $v = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { "dev-$($env:GITHUB_SHA.Substring(0, 7))" }
           tools\package.ps1 -Version $v
-          "name=zest-$v-llama-b10944-win-x64" >> $env:GITHUB_OUTPUT
+          "name=zest-$v-llama-b12109-win-x64" >> $env:GITHUB_OUTPUT
 
       - name: Check the extracted package and both commands
         shell: pwsh
@@ -88,7 +88,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: third_party
-          key: llama-b10944-linux-${{ hashFiles('tools/fetch-llama.sh') }}
+          key: llama-b12109-linux-${{ hashFiles('tools/fetch-llama.sh') }}
 
       - name: Build tools and a software Vulkan device
         run: sudo apt-get update && sudo apt-get install -y cmake ninja-build uuid-dev libvulkan1 mesa-vulkan-drivers
@@ -106,7 +106,7 @@ jobs:
         run: |
           if [[ "$GITHUB_REF_TYPE" == tag ]]; then v=$GITHUB_REF_NAME; else v=dev-${GITHUB_SHA::7}; fi
           tools/package.sh "$v"
-          echo "name=zest-$v-llama-b10944-ubuntu-x64" >> "$GITHUB_OUTPUT"
+          echo "name=zest-$v-llama-b12109-ubuntu-x64" >> "$GITHUB_OUTPUT"
 
       - name: Check the extracted package and both commands
         env:

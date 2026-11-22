@@ -69,7 +69,7 @@
             <div class="actions">
               <a
                 class="button primary"
-                href="https://github.com/Cyronius/zest/releases/download/v0.2.0/zest-v0.2.0-llama-b10944-win-x64.zip"
+                href="https://github.com/Cyronius/zest/releases/download/v0.3.0/zest-v0.3.0-llama-b12109-win-x64.zip"
                 ><svg viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M12 3v12m-5-5 5 5 5-5M4 15v5h16v-5" /></svg
                 >Download Windows preview</a
@@ -120,7 +120,7 @@
         </div>
         <p class="preview-note">
           Zest is an independent community add-on. Windows 11 preview, tested on
-          Strix Point with Lemonade 2026.43.3.
+          Strix Point with Lemonade 2026.47.1.
         </p>
       </section>
 
@@ -189,7 +189,7 @@
             Model load and weight conversion are excluded. This does not show a decode benefit or compare with Lemonade's current default backends.</p>
             <a class="text-link" href="https://github.com/Cyronius/zest/blob/main/docs/model-comparison.md">Read the test report</a></div>
           <div class="model-results"><h3>More models through Lemonade</h3>
-            <p>The same long prose request, measured on the same Strix Point laptop on 2026-11-21 with current source, which is newer than the Windows preview. The row split is off, as it now is by default on this laptop. Speedups vary by model and prompt.</p>
+            <p>The same long prose request, measured on the same Strix Point laptop on 2026-11-21 with the v0.3.0 add-on on the earlier llama.cpp b10944. v0.3.0 itself ships b12109, which we've checked with one model so far. The row split is off, as it now is by default on this laptop. Speedups vary by model and prompt.</p>
             <div class="model-table-scroll" role="region" aria-label="Model comparison; scroll horizontally on small screens" tabindex="0"><table>
               <caption>Prompt processing, tokens/s · 3 warm paired runs per model · median speedup with range</caption>
               <thead><tr><th scope="col">Model / GGUF</th><th scope="col">GPU</th><th scope="col">NPU + GPU</th><th scope="col">Speedup</th></tr></thead><tbody>
@@ -201,7 +201,7 @@
               <a class="text-link" href="https://github.com/Cyronius/zest/blob/main/docs/model-comparison.md">test report</a>.</p>
           </div>
           <div class="model-results"><h3>On Strix Halo, with llama.cpp directly</h3>
-            <p>Ryzen AI MAX+ 395 with Radeon 8060S on Linux. This GPU is about as fast as the NPU at the work Zest moves, so Zest runs both at once: each takes half of every large prompt chunk. (On Strix Point's smaller GPU that was slower, so it's off there.) Measured from current source, which is newer than the Windows preview. Two mixture-of-experts models we tried came out 4–5% slower; the full table has them.</p>
+            <p>Ryzen AI MAX+ 395 with Radeon 8060S on Linux. This GPU is about as fast as the NPU at the work Zest moves, so Zest runs both at once: each takes half of every large prompt chunk. (On Strix Point's smaller GPU that was slower, so it's off there.) Measured with the v0.3.0 add-on on the earlier llama.cpp b10944. Two mixture-of-experts models we tried came out 4–5% slower; the full table has them.</p>
             <div class="model-table-scroll" role="region" aria-label="Strix Halo model comparison; scroll horizontally on small screens" tabindex="0"><table>
               <caption>Prompt processing, tokens/s · one 2,048-token prompt · 5 to 9 paired rounds per model · median speedup with range</caption>
               <thead><tr><th scope="col">Model / GGUF</th><th scope="col">GPU</th><th scope="col">NPU + GPU</th><th scope="col">Speedup</th></tr></thead><tbody>
@@ -225,7 +225,7 @@
         <div class="section-intro">
           <h2 id="setup-title">Try it on your laptop</h2>
           <p>
-            You'll need Windows 11, Lemonade 2026.43.3, a local GGUF file,
+            You'll need Windows 11, Lemonade 2026.47.1, a local GGUF file,
             a Ryzen AI NPU with its AMD driver, and a Vulkan GPU driver. The
             preview includes the matching backend.
           </p>
@@ -242,7 +242,7 @@
             </div>
             <a
               class="text-link"
-              href="https://github.com/Cyronius/zest/releases/tag/v0.2.0"
+              href="https://github.com/Cyronius/zest/releases/tag/v0.3.0"
               >Windows preview
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M4 12h16m-6-6 6 6-6 6" /></svg
@@ -280,7 +280,7 @@
         </ol>
         <p class="setup-links">
           <a
-            href="https://github.com/lemonade-sdk/lemonade/releases/tag/v2026.43.3"
+            href="https://github.com/lemonade-sdk/lemonade/releases/tag/v2026.47.1"
             >Get the tested Lemonade version</a
           ><span>·</span
           ><a
@@ -298,12 +298,12 @@
           <h3>What we've tested so far</h3>
           <div class="compat-columns">
             <p>
-              Windows 11, Ryzen AI 9 HX PRO 370, Radeon 890M, and Lemonade
-              2026.43.3. The actual desktop app and local API both ran
-              NPU-assisted prompts.
+              Windows 11, Ryzen AI 9 HX PRO 370, Radeon 890M. v0.3.0 ran
+              NPU-assisted prompts through Lemonade 2026.47.1's local API. The
+              desktop app was last checked with v0.2.0 and Lemonade 2026.43.3.
             </p>
             <p>
-              This preview uses the bundled b10944 backend. Speed depends on
+              This release uses llama.cpp b12109, the build Lemonade 2026.47.1 bundles. Speed depends on
               your model, and converted weights use extra RAM. On Strix Halo
               under Linux we've measured direct llama.cpp use; Lemonade on
               Linux hasn't been verified by this project.
@@ -318,7 +318,7 @@
               The Qwen, LFM, and Granite models in our tests are examples,
               rather than a fixed model list. You don't need an ONNX or Q4NX
               export, or a separately compiled NPU kernel for each model.
-              Your GGUF must work with the bundled b10944 build; the add-on's
+              Your GGUF must work with the bundled b12109 build; the add-on's
               operation coverage, available memory, and hardware also matter.
               Some models get little benefit or run faster on the GPU alone.
               See the

@@ -24,17 +24,17 @@ llama.cpp use, building, architecture, tuning, and standalone measurements.
   [Results](#results) has both machines' figures.
 - The AMD NPU driver. Tested with 32.0.20102.3930.
 - A GPU driver with Vulkan. Tested with Radeon driver 32.0.31041.1004.
-- llama.cpp release **b10944**, Vulkan build
-  (`llama-b10944-bin-win-vulkan-x64.zip`, or
-  `llama-b10944-bin-ubuntu-vulkan-x64.tar.gz` on Linux). The add-on is
+- llama.cpp release **b12109**, Vulkan build
+  (`llama-b12109-bin-win-vulkan-x64.zip`, or
+  `llama-b12109-bin-ubuntu-vulkan-x64.tar.gz` on Linux). The add-on is
   built against that release and must run with it.
 
 ## Quick start
 
-Download `zest-<version>-llama-b10944-win-x64.zip` from the
+Download `zest-<version>-llama-b12109-win-x64.zip` from the
 [releases page](https://github.com/Cyronius/zest/releases) and unzip it
 into a folder of its own. It's llama.cpp's own Windows Vulkan release
-(b10944), unmodified, with the add-on (`ggml-zest.dll`), its NPU kernel
+(b12109), unmodified, with the add-on (`ggml-zest.dll`), its NPU kernel
 (`bfp16_gemm.xclbin`) and the launcher (`zest.exe`) next to it.
 
 The zip isn't signed, so Windows may warn the first time you run something
@@ -114,14 +114,14 @@ default 512-token chunks on the NPU too.
 the NPU yourself:
 
 ```
-set GGML_BACKEND_PATH=C:\path\to\llama-b10944\ggml-zest.dll
+set GGML_BACKEND_PATH=C:\path\to\llama-b12109\ggml-zest.dll
 llama-server -m model.gguf -dev XDNA0,Vulkan0 -ts 0,1
 ```
 
 Without `-dev XDNA0,...`, llama.cpp runs as if the add-on weren't there.
 
 **With Lemonade:** a verified Windows setup uses Lemonade's custom backend
-setting to run this same b10944 build. See [the Lemonade guide](lemonade.md)
+setting to run this same b12109 build. See [the Lemonade guide](lemonade.md)
 for setup, NPU execution checks and a paired API benchmark.
 
 `-ts 0,1` keeps every layer on the GPU, which is where llama.cpp puts them
@@ -173,13 +173,13 @@ CI builds the Linux add-on and runs the tests that need no NPU.
   *    hard    memlock    unlimited
   ```
 
-**Quick start:** download `zest-<version>-llama-b10944-ubuntu-x64.tar.gz`
+**Quick start:** download `zest-<version>-llama-b12109-ubuntu-x64.tar.gz`
 from the [releases page](https://github.com/Cyronius/zest/releases),
 unpack it, and use `zest` as above:
 
 ```
-tar -xzf zest-<version>-llama-b10944-ubuntu-x64.tar.gz
-cd zest-<version>-llama-b10944-ubuntu-x64
+tar -xzf zest-<version>-llama-b12109-ubuntu-x64.tar.gz
+cd zest-<version>-llama-b12109-ubuntu-x64
 ./zest llama-server -m model.gguf
 ./npu llama-server -m model.gguf
 ```
@@ -296,8 +296,8 @@ against the GPU alone. "Split off" is the same build with
 
 Ryzen AI 9 HX 370 with Radeon 890M, Windows 11, measured 2026-10-05 with an
 earlier build, before the row split.
-Through Lemonade on current source (2026-11-21, split off as is now the
-default here), see the [README's rerun table](../README.md#rerun-on-current-source-2026-11-21).
+Through Lemonade with the v0.3.0 add-on on b10944 (2026-11-21, split off as is now the
+default here), see the [README's rerun table](../README.md#rerun-with-the-v030-add-on-2026-11-21).
 
 | model | quant | width | GPU alone, tokens/s | with the add-on | rounds |
 |---|---|---|---|---|---|
@@ -742,9 +742,9 @@ CMake and Ninja). Then, from the repository:
 build.cmd
 ```
 
-It downloads llama.cpp b10944 and its matching headers into `third_party\`,
+It downloads llama.cpp b12109 and its matching headers into `third_party\`,
 builds the add-on and its tests, copies the DLL, the kernel and `zest.exe`
-next to the llama.cpp binaries in `third_party\llama-b10944`, and runs the
+next to the llama.cpp binaries in `third_party\llama-b12109`, and runs the
 tests. Run `zest` from there as in [Quick start](#quick-start). The NPU tests run only where the NPU
 driver is installed; the others need a Vulkan GPU. `build.cmd notest` skips
 the tests.

@@ -29,7 +29,7 @@ done
 
 log="$root/npu-check-$(date +%Y%m%d-%H%M%S).log"
 exec > >(tee -a "$log") 2>&1
-dist="$root/third_party/llama-b10944"
+dist="$root/third_party/llama-b12109"
 addon="$dist/libggml-zest.so"
 summary=()
 pass() { summary+=("PASS  $*"); echo ">>> PASS: $*"; }

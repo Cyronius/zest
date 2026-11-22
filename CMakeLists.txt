@@ -7,8 +7,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Prebuilt llama.cpp release we build against and run with. The headers come
 # from the matching source tag; on Windows the import libs are generated from
 # the release DLLs by tools/fetch-llama.ps1.
-set(GGML_DIST "${CMAKE_SOURCE_DIR}/third_party/llama-b10944" CACHE PATH "llama.cpp release binaries")
-set(GGML_HEADERS "${CMAKE_SOURCE_DIR}/third_party/ggml-b10944" CACHE PATH "matching ggml headers")
+set(GGML_DIST "${CMAKE_SOURCE_DIR}/third_party/llama-b12109" CACHE PATH "llama.cpp release binaries")
+set(GGML_HEADERS "${CMAKE_SOURCE_DIR}/third_party/ggml-b12109" CACHE PATH "matching ggml headers")
 set(GGML_IMPLIB_DIR "${CMAKE_SOURCE_DIR}/third_party" CACHE PATH "generated ggml import libs")
 
 # Without the NPU path the backend runs its claimed matmuls on a CPU

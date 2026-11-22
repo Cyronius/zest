@@ -6,15 +6,15 @@ or per-model NPU kernel compilation is required. The Qwen examples below
 show the setup, rather than a model restriction. Coverage depends on the
 bundled llama.cpp build and supported operations, and speedups vary by model.
 
-Verified on Windows with Lemonade **2026.43.3**, the unmodified
-llama.cpp **b10944 Vulkan** release, and this repository's `ggml-zest.dll`.
+Verified on Windows with Lemonade **2026.47.1**, the unmodified
+llama.cpp **b12109 Vulkan** release, and this repository's `ggml-zest.dll`.
 Lemonade forwards chat requests to llama-server; the add-on sends eligible
 prompt work to the NPU while the Vulkan GPU handles attention and generation.
 Neither Lemonade nor llama.cpp needs a source patch for this setup.
 
 This uses Lemonade's custom backend binary setting. Its default Vulkan
 backend is b11393 in this release, which is **not** the version this add-on
-was built against. Do not drop the b10944 DLL into an arbitrary newer build.
+was built against. Do not drop the b12109 DLL into an arbitrary newer build.
 This check does not establish compatibility with that default backend.
 
 See the [clean-package and desktop verification report](lemonade-validation.md)
@@ -25,7 +25,7 @@ for the build, model-quality, UI and fallback evidence.
 
 ## Start from the Windows ZIP
 
-1. Download the [Windows preview](https://github.com/Cyronius/zest/releases/tag/v0.2.0)
+1. Download the [Windows preview](https://github.com/Cyronius/zest/releases/tag/v0.3.0)
    and extract it. Keep all the files together.
 2. Quit the existing Lemonade tray server. The desktop chat window can stay open.
 3. Double-click `Start-Lemonade.cmd`. It looks for an installed Lemonade server;
@@ -37,7 +37,7 @@ for the build, model-quality, UI and fallback evidence.
    send a long prompt. The first request can take longer while weights are
    converted for the NPU.
 
-This preview was tested with [Lemonade 2026.43.3](https://github.com/lemonade-sdk/lemonade/releases/tag/v2026.43.3).
+This preview was tested with [Lemonade 2026.47.1](https://github.com/lemonade-sdk/lemonade/releases/tag/v2026.47.1).
 It includes the matching backend, but no Lemonade installer, AMD driver, or
 model weights. Other Lemonade versions haven't been verified here.
 
@@ -79,7 +79,7 @@ powershell -ExecutionPolicy Bypass -File tools\start-lemonade.ps1 `
 
 For a repository build, run `build.cmd` first. The launcher finds the pinned
 llama.cpp next to the release's `tools` directory, or in the repository's
-`third_party/llama-b10944`; `-LlamaDir` overrides that location. It probes the
+`third_party/llama-b12109`; `-LlamaDir` overrides that location. It probes the
 NPU before choosing `XDNA0,Vulkan0`, and selects `Vulkan0` when the NPU is
 unavailable. `-GpuOnly` explicitly chooses the GPU. Configuration, probe
 output and server logs live under a separate `-StateDir` (default:
@@ -100,9 +100,9 @@ that same API request, as the benchmark script does.
 
 ### Manual setup with portable Lemonade
 
-First build this repository with `build.cmd`, or unpack its b10944 release.
+First build this repository with `build.cmd`, or unpack its b12109 release.
 Download and unpack
-[`lemonade-embeddable-2026.43.3-windows-x64.zip`](https://github.com/lemonade-sdk/lemonade/releases/tag/v2026.43.3).
+[`lemonade-embeddable-2026.47.1-windows-x64.zip`](https://github.com/lemonade-sdk/lemonade/releases/tag/v2026.47.1).
 No system Lemonade installation is necessary.
 
 From the repository root in PowerShell, edit the first two paths below.
@@ -111,9 +111,9 @@ Use a model already downloaded to disk; the example benchmark uses
 `Qwen3-4B-Q4_K_M.gguf`.
 
 ```powershell
-$lemond = 'C:\path\to\lemonade-embeddable-2026.43.3-windows-x64\lemond.exe'
+$lemond = 'C:\path\to\lemonade-embeddable-2026.47.1-windows-x64\lemond.exe'
 $models = 'C:\path\to\models'
-$llama = (Resolve-Path third_party\llama-b10944).Path
+$llama = (Resolve-Path third_party\llama-b12109).Path
 $demo = Join-Path (Get-Location) 'third_party\lemonade-demo'
 New-Item -ItemType Directory -Force "$demo\cache", "$demo\config" | Out-Null
 @{
@@ -274,7 +274,7 @@ measured requests. The warm result is not cold-start latency.
 
 ## References
 
-- [Lemonade's backend binary selection](https://github.com/lemonade-sdk/lemonade/blob/v2026.43.3/docs/guide/configuration/README.md#backend-binary-selection)
-- [Lemonade's pinned backend versions](https://github.com/lemonade-sdk/lemonade/blob/v2026.43.3/src/cpp/resources/backend_versions.json)
-- [Lemonade's llama.cpp subprocess setup](https://github.com/lemonade-sdk/lemonade/blob/v2026.43.3/src/cpp/server/backends/llamacpp/llamacpp_server.cpp)
-- [Embeddable Lemonade runtime](https://github.com/lemonade-sdk/lemonade/blob/v2026.43.3/docs/embeddable/runtime.md)
+- [Lemonade's backend binary selection](https://github.com/lemonade-sdk/lemonade/blob/v2026.47.1/docs/guide/configuration/README.md#backend-binary-selection)
+- [Lemonade's pinned backend versions](https://github.com/lemonade-sdk/lemonade/blob/v2026.47.1/src/cpp/resources/backend_versions.json)
+- [Lemonade's llama.cpp subprocess setup](https://github.com/lemonade-sdk/lemonade/blob/v2026.47.1/src/cpp/server/backends/llamacpp/llamacpp_server.cpp)
+- [Embeddable Lemonade runtime](https://github.com/lemonade-sdk/lemonade/blob/v2026.47.1/docs/embeddable/runtime.md)

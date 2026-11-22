@@ -5,7 +5,7 @@
 # tables with dumpbin + lib. Same source tag, so the ABI matches.
 
 param(
-    [string] $Tag  = "b10944",
+    [string] $Tag  = "b12109",
     [string] $Root = (Join-Path $PSScriptRoot ".." | Resolve-Path)
 )
 

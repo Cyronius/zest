@@ -18,13 +18,13 @@ no NPU kernel to compile for each model. Qwen, LFM, and Granite are examples,
 rather than a fixed list of supported models. Coverage depends on the bundled
 llama.cpp build and the operations the add-on implements; speedups vary by model.
 
-**[Download the Windows preview](https://github.com/Cyronius/zest/releases/tag/v0.2.0)**
+**[Download the Windows preview](https://github.com/Cyronius/zest/releases/tag/v0.3.0)**
 · [Setup guide](docs/lemonade.md)
 · [Website](https://cyronius.github.io/zest/)
 · [Direct llama.cpp / Linux](docs/technical-guide.md)
 
 This is an independent community add-on. The tested preview uses
-Lemonade **2026.43.3** and the bundled **llama.cpp b10944** backend.
+Lemonade **2026.47.1** and the bundled **llama.cpp b12109** backend.
 Packages include the `zest` and `npu` commands on Windows and Linux, with
 `ggml-zest.dll` on Windows and `libggml-zest.so` on Linux.
 Keep that backend together: the DLL won't work with an arbitrary newer build.
@@ -47,12 +47,12 @@ on one laptop, aligned at request start.
 ## Try it on Windows
 
 You'll need Windows 11, an AMD Ryzen AI NPU with its driver, a Vulkan GPU
-driver, [Lemonade 2026.43.3](https://github.com/lemonade-sdk/lemonade/releases/tag/v2026.43.3),
+driver, [Lemonade 2026.47.1](https://github.com/lemonade-sdk/lemonade/releases/tag/v2026.47.1),
 and a GGUF file already on disk. We tested a Ryzen AI 9 HX PRO 370 with
 Radeon 890M graphics. Qwen3-4B Q4_K_M is a useful starting point if you want
 to repeat that test. Lemonade, drivers, and model weights are separate downloads.
 
-1. [Download the Windows preview](https://github.com/Cyronius/zest/releases/tag/v0.2.0)
+1. [Download the Windows preview](https://github.com/Cyronius/zest/releases/tag/v0.3.0)
    and extract the ZIP. Keep the files together. There's a SHA-256 checksum
    beside the download and a file manifest inside it.
 2. Quit the existing Lemonade tray server, then double-click
@@ -109,10 +109,13 @@ These are warm prefill timings, excluding model load and weight conversion. They
 
 [Full comparison, method, and model files](docs/model-comparison.md) · [Raw results and traces](docs/results/headline-models-2026-10-21/)
 
-### Rerun on current source, 2026-11-21
+### Rerun with the v0.3.0 add-on, 2026-11-21
 
-The same test with current source, which is newer than the Windows preview,
-on the same laptop and model files. The row split (the GPU working on half of
+The same test with the v0.3.0 add-on, still on Lemonade 2026.43.3 and
+llama.cpp b10944, on the same laptop and model files. v0.3.0 itself ships
+llama.cpp b12109 for Lemonade 2026.47.1; on that build, a one-model check
+(Qwen3-4B, machine busy) gave the same answers, the same NPU call counts and
+a mean KL divergence of 0.0018 against the GPU alone. The row split (the GPU working on half of
 each big prompt chunk while the NPU does the other half) is now off by
 default on Strix Point and other Radeon 800M laptops, because it was slower
 here:
@@ -171,7 +174,7 @@ Five paired rounds per model (nine for the models under 3B), measured 2026-11-21
 
 This GPU is about as fast as the NPU at the work Zest moves, so here Zest runs both at once: the NPU takes half the rows of each prompt chunk and the GPU the other half. With that turned off, the same build is no faster than the GPU alone on Qwen3.8-27B (0.97–0.99×). The last two rows are mixture-of-experts models: the NPU can't run their expert step, and they come out slightly slower with Zest than without.
 
-These figures are from the current source, which is newer than the v0.2.0 Windows preview. The Strix Point table above was measured with the preview's build.
+These figures are from the v0.3.0 add-on on the earlier llama.cpp b10944. The October Strix Point table above was measured with v0.2.0's build.
 
 [Method, the split-off figures, and accuracy](docs/technical-guide.md#results) · [Raw results](docs/results/halo-page-2026-11-21.json)
 
@@ -180,11 +183,11 @@ These figures are from the current source, which is newer than the v0.2.0 Window
 | Item | What we've checked |
 |---|---|
 | Windows 11, Ryzen AI 9 HX PRO 370 / Radeon 890M | Actual Lemonade desktop and API tests |
-| Lemonade / backend | 2026.43.3 / bundled b10944 Vulkan build |
+| Lemonade / backend | 2026.47.1 / bundled b12109 Vulkan build |
 | Strix Halo, Ryzen AI MAX+ 395 / Radeon 8060S, Arch Linux | Direct llama.cpp: every test passes on the NPU; 1.24–1.56× on eight dense models, 0.88–0.97× on two mixture-of-experts models |
 | Other Ryzen AI hardware | Not tested by this project |
 | Linux | Direct llama.cpp runs on the Strix Halo NPU; Lemonade integration on Linux remains unverified |
-| Models | Coverage depends on b10944 and the operations the add-on implements |
+| Models | Coverage depends on b12109 and the operations the add-on implements |
 | Memory and output | Converted weight copies need extra RAM; block rounding changes numerical results |
 | NPU unavailable at startup | Launcher chooses the GPU and logs the reason |
 | NPU failure during a request | Failed work is retried on GPU; later prompts use the GPU |

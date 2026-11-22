@@ -34,7 +34,7 @@ function Select-LocalFile([string]$Title, [string]$Filter) {
 if ($Interactive) {
     Write-Host 'Zest for Lemonade'
     Write-Host 'Quit your existing Lemonade tray server before starting this one.'
-    Write-Host 'Tested with Lemonade 2026.43.3. Choose an existing local GGUF model.'
+    Write-Host 'Tested with Lemonade 2026.47.1. Choose an existing local GGUF model.'
     if (-not $LemonadeExe) {
         $candidates = @()
         $command = Get-Command LemonadeServer.exe -ErrorAction SilentlyContinue
@@ -80,7 +80,7 @@ if ([IO.Path]::GetExtension($Model) -ne '.gguf') { throw '-Model must name a GGU
 if (-not $LlamaDir) {
     $LlamaDir = "$PSScriptRoot/.."
     if (-not (Test-Path "$LlamaDir/llama-server.exe")) {
-        $LlamaDir = "$PSScriptRoot/../third_party/llama-b10944"
+        $LlamaDir = "$PSScriptRoot/../third_party/llama-b12109"
     }
 }
 $LlamaDir = (Resolve-Path -LiteralPath $LlamaDir).Path

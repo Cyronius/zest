@@ -25,7 +25,7 @@ body:
     id: versions
     attributes:
       label: Zest and llama.cpp versions
-      description: The Zest release or commit, and the llama.cpp build (for example, b10944)
+      description: The Zest release or commit, and the llama.cpp build (for example, b12109)
     validations:
       required: true
   - type: input

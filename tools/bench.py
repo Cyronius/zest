@@ -38,7 +38,7 @@ a = ap.parse_args()
 
 # next to this script (the release package), else the repo's build of llama.cpp
 ZEST = "zest.exe" if os.name == "nt" else "zest"
-llama_dir = a.llama_dir or (HERE if os.path.exists(os.path.join(HERE, ZEST)) else os.path.join(HERE, "..", "third_party", "llama-b10944"))
+llama_dir = a.llama_dir or (HERE if os.path.exists(os.path.join(HERE, ZEST)) else os.path.join(HERE, "..", "third_party", "llama-b12109"))
 zest = os.path.join(llama_dir, ZEST)
 if not os.path.exists(zest):
     sys.exit(f"no {ZEST} in {llama_dir}; pass --llama-dir")

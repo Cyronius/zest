@@ -23,7 +23,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: third_party
-          key: llama-b10944-${{ hashFiles('tools/fetch-llama.ps1') }}
+          key: llama-b12109-${{ hashFiles('tools/fetch-llama.ps1') }}
 
       - name: Vulkan loader and a software Vulkan device
         uses: jakoch/install-vulkan-sdk-action@v1.6.0
@@ -59,7 +59,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: third_party
-          key: llama-b10944-linux-${{ hashFiles('tools/fetch-llama.sh') }}
+          key: llama-b12109-linux-${{ hashFiles('tools/fetch-llama.sh') }}
 
       - name: Build tools and a software Vulkan device
         run: sudo apt-get update && sudo apt-get install -y cmake ninja-build uuid-dev libvulkan1 mesa-vulkan-drivers

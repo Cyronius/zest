@@ -62,7 +62,7 @@ met inside the add-on.
 **Acceptance criteria:**
 - `llama-bench --list-devices` with `GGML_BACKEND_PATH` set lists an `XDNA`
   device alongside the in-tree ones.
-- Nothing in `third_party/llama-b10944` is modified except by dropping our own
+- Nothing in `third_party/llama-b12109` is modified except by dropping our own
   built files into it.
 
 **Verification:** run `llama-bench --list-devices` with the variable set and

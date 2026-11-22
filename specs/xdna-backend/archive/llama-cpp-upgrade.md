@@ -37,3 +37,7 @@ Modifies **XDNA-BACKEND-LOAD**, **XDNA-SERVER-USE**, **XDNA-RELEASE** and **XDNA
 - GPU-only speed may change with the new Vulkan backend, which moves every ratio we publish. Step 6 measures that before anything is published.
 - Lemonade 2026.47.1 may pass llama-server options that b10944-era scripts don't expect. The launcher script needs checking against it.
 - Strix Halo numbers would need a rerun on that machine.
+
+## Outcome (2026-11-22)
+
+Done with b12109 (the owner's choice). Zest compiled against b12109 with no source changes: the interface changes are all in the buffer structs, which Zest doesn't define (it uses Vulkan's buffers). All 27 tests pass. On Strix Point through Lemonade 2026.47.1, Qwen3-4B gave 3/3 answers in both modes and the same 342/344 NPU calls per prompt as before; `tools/bench.py --kl` gave a mean KL divergence of 0.00182 against the GPU alone, with 98.97% the same top token. The machine was busy, so no speed was published. Still owed under XDNA-MODELS: the full model tables on b12109.

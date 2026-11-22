@@ -3,7 +3,7 @@
 set -euo pipefail
 
 version=${1:?usage: tools/package.sh <version>}
-tag=b10944
+tag=b12109
 archive_sha256=de48f1c0890365d432dea3db1d8e9482686748fe5821f211719779e5724bdc7b
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 build=${BUILD:-$root/build}

@@ -10,7 +10,7 @@
 
 param(
     [Parameter(Mandatory)] [string] $Version,
-    [string] $Tag   = "b10944",
+    [string] $Tag   = "b12109",
     [string] $Root  = "",
     [string] $Build = "",
     [string] $Out   = ""
@@ -42,8 +42,8 @@ $dl = Join-Path $Out "llama-$Tag-bin-win-vulkan-x64.zip"
 if (-not (Test-Path $dl)) {
     Invoke-WebRequest -Uri "https://github.com/ggml-org/llama.cpp/releases/download/$Tag/llama-$Tag-bin-win-vulkan-x64.zip" -OutFile $dl
 }
-if ($Tag -eq 'b10944' -and (Get-FileHash -Algorithm SHA256 -LiteralPath $dl).Hash.ToLowerInvariant() -ne
-    '972679213f8d3ae1a4f667986bafd8eeba2bc487807dc5d001fcf21c188129ea') {
+if ($Tag -eq 'b12109' -and (Get-FileHash -Algorithm SHA256 -LiteralPath $dl).Hash.ToLowerInvariant() -ne
+    'ed1d85207f58a292b5e9b9b529ecd4439bb8a60c5460dab0c137ef94d4322f2a') {
     throw 'llama.cpp archive checksum mismatch'
 }
 Expand-Archive -Path $dl -DestinationPath $stage
