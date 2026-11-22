@@ -109,6 +109,16 @@ These are warm prefill timings, excluding model load and weight conversion. They
 
 [Full comparison, method, and model files](docs/model-comparison.md) · [Raw results and traces](docs/results/headline-models-2026-10-21/)
 
+### v0.3.0 release checks, 2026-11-22
+
+On the published v0.3.0 package (llama.cpp b12109), two models passed the
+release checks: they run with no NPU failure, their answers stay close to the
+GPU's (mean KL divergence 0.0018 for both), and their speed was measured with
+`llama-bench` at 2,048 tokens: LFM2.5-2.6B Q8_0 at a median 2.23x the GPU alone
+(857 to 1,923 tokens/s) and Qwen3-4B Q4_K_M at 1.72x (508 to 876). These are
+direct llama.cpp figures, not Lemonade ones.
+[Details](docs/results/v0.3.0-release-checks/)
+
 ### Rerun with the v0.3.0 add-on, 2026-11-21
 
 The same test with the v0.3.0 add-on, still on Lemonade 2026.43.3 and

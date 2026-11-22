@@ -1,0 +1,59 @@
+[
+ {
+  "file": "Qwen3-4B-Q4_K_M.gguf",
+  "prompt": 2048,
+  "rounds": [
+   {
+    "add-on": {
+     "gpu": 507.90752,
+     "with": 875.545543,
+     "ratio": 1.7238286666832576,
+     "npu_failures": 0
+    }
+   },
+   {
+    "add-on": {
+     "gpu": 515.392868,
+     "with": 867.3247,
+     "ratio": 1.682841874327217,
+     "npu_failures": 0
+    }
+   },
+   {
+    "add-on": {
+     "gpu": 506.630247,
+     "with": 930.524078,
+     "ratio": 1.836692703426371,
+     "npu_failures": 0
+    }
+   },
+   {
+    "add-on": {
+     "gpu": 512.406071,
+     "with": 832.285755,
+     "ratio": 1.62426989472574,
+     "npu_failures": 0
+    }
+   },
+   {
+    "add-on": {
+     "gpu": 492.750097,
+     "with": 906.80459,
+     "ratio": 1.8402930725349,
+     "npu_failures": 0
+    }
+   }
+  ],
+  "model": "qwen3 4B Q4_K - Medium",
+  "add-on": {
+   "gpu_median": 507.90752,
+   "with_median": 875.545543,
+   "ratio_median": 1.7238286666832576,
+   "ratio_lo": 1.62426989472574,
+   "ratio_hi": 1.8402930725349,
+   "n": 5
+  },
+  "kld": 0.00182,
+  "same_top_pct": 98.971
+ }
+]
