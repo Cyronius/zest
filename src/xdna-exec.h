@@ -52,10 +52,10 @@ struct xdna_io {
 };
 
 // Host time in those passes, and how many, since the last reset, for
-// GGML_XDNA_TRACE.
+// ZEST_TRACE.
 extern double xdna_pass_ms;
 extern int64_t xdna_passes;
-// Worker CPU time (summed across threads), enabled only by GGML_XDNA_TRACE.
+// Worker CPU time (summed across threads), enabled only by ZEST_TRACE.
 extern std::atomic<int64_t> xdna_decode_cpu_ns;
 extern std::atomic<int64_t> xdna_encode_cpu_ns;
 extern std::atomic<int64_t> xdna_op_cpu_ns[GGML_OP_COUNT];

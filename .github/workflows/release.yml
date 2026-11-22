@@ -46,7 +46,7 @@ jobs:
           GGML_VK_VISIBLE_DEVICES: "0"
           GGML_VK_DISABLE_F16: "1"
           GGML_VK_DISABLE_COOPMAT: "1"
-          GGML_XDNA_PINNED: "0"
+          ZEST_PINNED: "0"
         run: build.cmd
 
       - name: Package
@@ -63,7 +63,7 @@ jobs:
           GGML_VK_VISIBLE_DEVICES: "0"
           GGML_VK_DISABLE_F16: "1"
           GGML_VK_DISABLE_COOPMAT: "1"
-          GGML_XDNA_PINNED: "0"
+          ZEST_PINNED: "0"
         run: |
           $unpacked = Join-Path $env:RUNNER_TEMP 'zest-package-check'
           Expand-Archive -LiteralPath "dist/${{ steps.package.outputs.name }}.zip" -DestinationPath $unpacked
@@ -98,7 +98,7 @@ jobs:
           GGML_VK_VISIBLE_DEVICES: "0"
           GGML_VK_DISABLE_F16: "1"
           GGML_VK_DISABLE_COOPMAT: "1"
-          GGML_XDNA_PINNED: "0"
+          ZEST_PINNED: "0"
         run: ./build.sh
 
       - name: Package
@@ -113,7 +113,7 @@ jobs:
           GGML_VK_VISIBLE_DEVICES: "0"
           GGML_VK_DISABLE_F16: "1"
           GGML_VK_DISABLE_COOPMAT: "1"
-          GGML_XDNA_PINNED: "0"
+          ZEST_PINNED: "0"
         run: |
           unpacked=$(mktemp -d)
           tar -xzf "dist/${{ steps.package.outputs.name }}.tar.gz" -C "$unpacked"

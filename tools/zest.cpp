@@ -679,11 +679,11 @@ int launch(const std::vector<std::string> & argv) {
     // and anything it starts (the router's per-model servers) inherit
     std::string set;
     if (!opt.memory_gb.empty()) {
-        set_env("GGML_XDNA_MAX_COPY_GB", opt.memory_gb);
+        set_env("ZEST_MAX_COPY_GB", opt.memory_gb);
         set += "; NPU weight copies limited to " + opt.memory_gb + " GB";
     }
     if (!opt.min_chunk.empty()) {
-        set_env("GGML_XDNA_MIN_BATCH", opt.min_chunk);
+        set_env("ZEST_MIN_BATCH", opt.min_chunk);
         set += "; NPU takes chunks of " + opt.min_chunk + " tokens or more";
     }
 

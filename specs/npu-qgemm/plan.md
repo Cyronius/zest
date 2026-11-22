@@ -229,7 +229,7 @@ GEMM at today's bandwidth, more with bf16 C on top.
 ### Which weights get which copy
 
 BFP16 copies stay wherever they fit; quantized copies are for the rest.
-`GGML_XDNA_WEIGHTS` (and a `zest` flag beside `--memory-gb`):
+`ZEST_WEIGHTS` (and a `zest` flag beside `--memory-gb`):
 
 - `auto` (default): BFP16 copies within the memory budget, quantized copies
   for the weights past it, which today stay on the GPU (15 of the 27B's 64
@@ -262,7 +262,7 @@ To do:
 - Rebuild the shipped kernel (`kernels/bfp16_gemm/build-linux.sh 1024 5120 10240`)
   and run `ctest -L npu`, `test-npu-wide` and `test-mul-mat`.
 - **Baseline:** time the current kernel per GEMM at the 27B's shapes
-  (`GGML_XDNA_TRACE`, `build/npu`, `bench-hybrid-projection`) and compare
+  (`ZEST_TRACE`, `build/npu`, `bench-hybrid-projection`) and compare
   with the bytes it moves.
 
 **Stop point:** if the current kernel is compute-bound, not bandwidth-bound,
@@ -388,7 +388,7 @@ interleaved):
   context, 2.55 ms a call alternating between the two xclbins. So the
   backend must not interleave them per matmul.
 
-**Backend plan from this.** `GGML_XDNA_WEIGHTS=auto|bfp16|quant`:
+**Backend plan from this.** `ZEST_WEIGHTS=auto|bfp16|quant`:
 - `bfp16`: today's path only.
 - `quant`: every NPU weight under the quantized xclbin, Q4_K unpacked and
   the rest copied through. One context, the smallest copies, ~30% slower
@@ -405,7 +405,7 @@ copies (`add_weight` / `add_fused` with `quant`: Q4_K re-laid straight from
 the GGUF rows, fused gate/up interleaved the same way; other types packed and
 spread), runs them at 384 / 768 / 1,152 rows a call, and reads their C with
 the 3-row tiling. `ggml-zest.cpp`'s budget picks the kernel per weight
-(`GGML_XDNA_WEIGHTS`). Tests: `mul-mat-npu-quant` (every weight-buffer case
+(`ZEST_WEIGHTS`). Tests: `mul-mat-npu-quant` (every weight-buffer case
 under the quantized kernel: same errors as BFP16's to the printed digit),
 `memory-budget-npu-quant`.
 
@@ -523,7 +523,7 @@ waiting. With the GPU to itself later that evening (controls matching the
 morning's quiet figures): 300.0 before, 305.6 with the new kernel and
 chains (`docs/results/halo-npu-chain-2026-11-18.json` has both sittings).
 
-**The row split (`GGML_XDNA_SPLIT`; the default at 50% since 2026-11-19,
+**The row split (`ZEST_SPLIT`; the default at 50% since 2026-11-19,
 an off-by-default experiment when this was written).** Taking
 turns, the two devices cannot beat the faster of them by much: the NPU and
 the GPU tie on the multiplies, so the pieces the NPU takes cost what the GPU
@@ -629,7 +629,7 @@ The dense models go from behind the GPU alone to 1.17x and 1.24x of it.
 The mixture-of-experts model stays behind it (0.80x, from 0.61x); the next
 section has why.
 
-The quantized-weight kernel (`GGML_XDNA_WEIGHTS=quant`, all 64 layers in
+The quantized-weight kernel (`ZEST_WEIGHTS=quant`, all 64 layers in
 16 GB of copies) gains from the split too, but stays behind (04:19, 2,048
 tokens, GPU alone 342.5 and the default kernel's split 431.2 in the same
 turn): 234.2 without the split, 308.4 at 50%, 370.9 at 25%, where the NPU
@@ -872,8 +872,8 @@ compared token by token over the first four pieces:
 | GPU alone, and again | 0.165, 0.165 | 0 |
 | CPU alone | 0.061 | 0.55 |
 | zest as shipped; split off; chain off; quantized-weight kernel; build a87d2ae | 1.000 | 8.26 |
-| zest, the NPU's share on the CPU (`GGML_XDNA_HOST_ONLY=1`) | 0.812 | 1.44 |
-| zest, multiplies only (`GGML_XDNA_BLOCKS=0`) | 0.010 | 1.18 |
+| zest, the NPU's share on the CPU (`ZEST_HOST_ONLY=1`) | 0.812 | 1.44 |
+| zest, multiplies only (`ZEST_BLOCKS=0`) | 0.010 | 1.18 |
 
 (8.26 and not 14.0 because the saved log-probabilities stop 16 below the
 largest logit.) The CPU and the GPU differ most from each other at this
@@ -906,7 +906,7 @@ On the busy machine, with paired runs in one `llama-bench` call:
 
     zest llama-bench -m Qwen3.8-27B-Q4_K_M.gguf -dev Vulkan0,XDNA0/Vulkan0 -p 1024,2769 -n 0
 
-- before and after, with per-GEMM NPU ms from `GGML_XDNA_TRACE`;
+- before and after, with per-GEMM NPU ms from `ZEST_TRACE`;
 - layers on the NPU (expect 64/64), load time, and memory;
 - `tools/linux-npu-check.sh`'s KL check (mean KL < 0.01 against the GPU)
   and 24-token reply match.

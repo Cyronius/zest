@@ -163,11 +163,11 @@ struct group {
     xdna_npu::group npu() const { return { keys, chain }; }
 };
 
-// GGML_XDNA_CHAIN=0: the feed-forward's two multiplies as two submissions,
+// ZEST_CHAIN=0: the feed-forward's two multiplies as two submissions,
 // with a host pass between them (as before chains).
 bool chains_enabled() {
     static const bool v = [] {
-        const char * s = xdna_env("GGML_XDNA_CHAIN");
+        const char * s = xdna_env("ZEST_CHAIN");
         return !s || atoi(s) != 0;
     }();
     return v;
@@ -398,7 +398,7 @@ struct piece {
         const group * next = seg.next >= 0 ? &groups[seg.next] : nullptr;
         const int64_t tiles = (t1 - t0 + TILE_ROWS - 1) / TILE_ROWS;
         std::atomic<bool> bad{ false };
-        static const bool trace = xdna_env("GGML_XDNA_TRACE") != nullptr;
+        static const bool trace = xdna_env("ZEST_TRACE") != nullptr;
         pool.parallel_for(tiles, [&](int64_t i0, int64_t i1) {
             thread_local std::vector<float> scratch;
             if (scratch.size() < scratch_floats) scratch.resize(scratch_floats);
@@ -644,7 +644,7 @@ bool xdna_exec_piece(const ggml_cgraph * g, xdna_npu * npu, thread_pool & pool, 
     // Where each result lives. One made and read within a single segment,
     // and read by nothing outside the piece, lives only in tiles; everything
     // else gets host memory for the whole piece.
-    static const bool dump = xdna_env("GGML_XDNA_DUMP") != nullptr;  // every result kept, to show
+    static const bool dump = xdna_env("ZEST_DUMP") != nullptr;  // every result kept, to show
     std::unordered_map<const ggml_tensor *, int> made, last;  // by key: the segment that makes it, the last that reads it
     auto reads = [&](const ggml_tensor * t, int si) {
         const ggml_tensor * k = P.key(t);
@@ -733,7 +733,7 @@ bool xdna_exec_piece(const ggml_cgraph * g, xdna_npu * npu, thread_pool & pool, 
         }
     }
 
-    // GGML_XDNA_DUMP=1: each small op's inputs and output, first values
+    // ZEST_DUMP=1: each small op's inputs and output, first values
     if (dump) {
         fprintf(stderr, "xdna piece:");
         for (int i = 0; i < g->n_nodes; i++) fprintf(stderr, " %s(%s)", ggml_op_name(g->nodes[i]->op), g->nodes[i]->name);

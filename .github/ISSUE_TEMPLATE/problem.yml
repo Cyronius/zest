@@ -53,7 +53,7 @@ body:
     id: log
     attributes:
       label: Log
-      description: The whole output, run with `set GGML_XDNA_TRACE=1`
+      description: The whole output, run with `set ZEST_TRACE=1`
       render: text
     validations:
       required: true

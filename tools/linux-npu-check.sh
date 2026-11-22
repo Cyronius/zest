@@ -170,7 +170,7 @@ cat "$root/README.md" "$root/specs/xdna-backend/spec.md" > "$work/text.txt"
 section "the same answer as the GPU (XDNA-BLOCK-AGREES)"
 agree=(-m "$small" -f "$work/short.txt" -n 24 --temp 0 -no-cnv -fa on -b 2048 -ub 2048)
 GGML_BACKEND_PATH="$addon" "$dist/llama-completion" "${agree[@]}" -dev Vulkan0 > "$work/gpu.txt" 2> "$work/gpu.err"
-GGML_BACKEND_PATH="$addon" GGML_XDNA_MIN_BATCH=32 "$dist/llama-completion" "${agree[@]}" -dev XDNA0,Vulkan0 -ts 0,1 \
+GGML_BACKEND_PATH="$addon" ZEST_MIN_BATCH=32 "$dist/llama-completion" "${agree[@]}" -dev XDNA0,Vulkan0 -ts 0,1 \
     > "$work/npu.txt" 2> "$work/npu.err"
 echo "GPU:  $(tail -c 300 "$work/gpu.txt")"
 echo "NPU:  $(tail -c 300 "$work/npu.txt")"
@@ -183,7 +183,7 @@ fi
 
 section "npu on a 3,000-token prompt, with the trace on"
 start=$(date +%s)
-GGML_XDNA_TRACE=1 "$dist/zest" llama-completion -m "$small" -f "$work/long.txt" -n 32 --temp 0 -no-cnv -c 8192 \
+ZEST_TRACE=1 "$dist/zest" llama-completion -m "$small" -f "$work/long.txt" -n 32 --temp 0 -no-cnv -c 8192 \
     > "$work/launch.txt" 2> "$work/launch.err"
 code=$?
 echo "exit code $code, $(($(date +%s) - start)) s"
@@ -252,9 +252,9 @@ fi
 #
 
 if ((!quick)); then
-    section "an NPU failure mid-prompt (GGML_XDNA_FAIL_AFTER=30)"
+    section "an NPU failure mid-prompt (ZEST_FAIL_AFTER=30)"
     start=$(date +%s)
-    GGML_BACKEND_PATH="$addon" GGML_XDNA_FAIL_AFTER=30 "$dist/llama-completion" -m "$small" -f "$work/long.txt" -n 24 \
+    GGML_BACKEND_PATH="$addon" ZEST_FAIL_AFTER=30 "$dist/llama-completion" -m "$small" -f "$work/long.txt" -n 24 \
         --temp 0 -no-cnv -c 8192 -b 2048 -ub 2048 -dev XDNA0,Vulkan0 -ts 0,1 > "$work/fail.txt" 2> "$work/fail.err"
     code=$?
     took=$(($(date +%s) - start))

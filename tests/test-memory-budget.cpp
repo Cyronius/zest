@@ -1,11 +1,11 @@
 // The NPU's weight copies are held to a memory limit, decided through
-// supports_op like the rest of the policy. Run with GGML_XDNA_MAX_COPY_GB=0.05
+// supports_op like the rest of the policy. Run with ZEST_MAX_COPY_GB=0.05
 // (51.2 MiB) and the other settings at their defaults.
 //
 // A 2048 x 2048 weight's copy is 4.5 MiB, so a layer of four is 18 MiB:
 // layers 0 and 1 fit (36 MiB), layer 2's fourth weight would pass the limit.
 //
-// With GGML_XDNA_WEIGHTS=quant as well (ctest's memory-budget-*-quant), the
+// With ZEST_WEIGHTS=quant as well (ctest's memory-budget-*-quant), the
 // copies are for the quantized-weight kernel, which holds a Q4_K weight of
 // that size in 2.375 MiB: layers 0-4 fit (47.5 MiB), layer 5's second weight
 // would pass the limit.
@@ -68,7 +68,7 @@ int main() {
         return ggml_backend_dev_supports_op(dev, ggml_mul_mat(ctx, weight, x));
     };
 
-    const char * wmode = getenv("GGML_XDNA_WEIGHTS");
+    const char * wmode = getenv("ZEST_WEIGHTS");
     if (wmode && !strcmp(wmode, "quant")) {
         // every copy for the quantized-weight kernel: Q4_K at its quantized size
         ggml_backend_t be = ggml_backend_dev_init(dev, NULL);

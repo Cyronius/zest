@@ -3,13 +3,13 @@
 // norm, the gate and up multiplies, their SwiGLU, the down multiply and the
 // residual add, the weights in a weight buffer. The backend fuses gate and up
 // and chains the down multiply behind them (one NPU submission, the SwiGLU
-// never coming to the host); with GGML_XDNA_CHAIN=0 a host pass sits between.
-// As shipped the GPU runs half the rows at the same time (GGML_XDNA_SPLIT, 0
+// never coming to the host); with ZEST_CHAIN=0 a host pass sits between.
+// As shipped the GPU runs half the rows at the same time (ZEST_SPLIT, 0
 // for none; those tests also look for the trace line that says the piece was
 // shared).
 // Whichever way, the result has to stay close to the CPU backend's on the
 // same bytes, and the NPU must not have failed on the way (when it does the
-// GPU finishes the work, with the right answer: GGML_XDNA_FAIL_AFTER tests
+// GPU finishes the work, with the right answer: ZEST_FAIL_AFTER tests
 // that).
 //
 // Prints a checksum of the result, so runs that should give the same bits can
@@ -143,7 +143,7 @@ int main() {
     }
     // as llama.cpp's scheduler would: every op offered first (that is also how the backend learns who reads what)
     // (in host-only mode it takes only the multiplies; handed the whole block it still runs it)
-    const char * host_only = getenv("GGML_XDNA_HOST_ONLY");
+    const char * host_only = getenv("ZEST_HOST_ONLY");
     bool all = true;
     for (int i = 0; i < ggml_graph_n_nodes(on_npu.gf); i++) {
         ggml_tensor * n = ggml_graph_node(on_npu.gf, i);
@@ -177,8 +177,8 @@ int main() {
         // three multiplies on 8-bit blocks, two of them in a row: about 2e-2
         check(nrmse < 3e-2 && std::isfinite(nrmse), "the block's result is close to the CPU's");
     }
-    // (GGML_XDNA_FAIL_AFTER makes it fail, to test that the GPU then finishes the block)
-    const char * fail = getenv("GGML_XDNA_FAIL_AFTER");
+    // (ZEST_FAIL_AFTER makes it fail, to test that the GPU then finishes the block)
+    const char * fail = getenv("ZEST_FAIL_AFTER");
     const bool injected = fail && *fail;
     check(g_npu_failed == injected, injected ? "the NPU was made to fail, and the backend said so" : "the NPU did not fail");
 

@@ -62,7 +62,7 @@ size_t qcopy_bytes(int type, int64_t K, int64_t N) {
 
 bool out16_enabled() {
     static const bool v = [] {
-        const char * s = xdna_env("GGML_XDNA_OUT16");
+        const char * s = xdna_env("ZEST_OUT16");
         return !s || atoi(s) != 0;
     }();
     return v;
@@ -103,25 +103,25 @@ bool read_row(const float * c, int64_t M, int64_t N, int mode, int64_t r, int64_
 
 const char * const NOT_FINITE = "the NPU's results held NaN or infinity (a damaged weight copy)";
 
-// GGML_XDNA_FAIL_AFTER=n: every NPU submission after the n-th fails, to test
+// ZEST_FAIL_AFTER=n: every NPU submission after the n-th fails, to test
 // the backend's fallback to the CPU.
 bool injected_failure(std::string & err) {
     static const long long after = [] {
-        const char * s = xdna_env("GGML_XDNA_FAIL_AFTER");
+        const char * s = xdna_env("ZEST_FAIL_AFTER");
         return s ? atoll(s) : -1LL;
     }();
     static std::atomic<long long> n{ 0 };
     if (after < 0 || ++n <= after) return false;
-    err = "an injected failure (GGML_XDNA_FAIL_AFTER)";
+    err = "an injected failure (ZEST_FAIL_AFTER)";
     return true;
 }
 
-// GGML_XDNA_NAN_AFTER=n: every NPU result after the n-th submission comes back
+// ZEST_NAN_AFTER=n: every NPU result after the n-th submission comes back
 // as NaN, as it does when a weight copy is damaged in the NPU's memory, to test
 // that such results are caught.
 bool injected_nan() {
     static const long long after = [] {
-        const char * s = xdna_env("GGML_XDNA_NAN_AFTER");
+        const char * s = xdna_env("ZEST_NAN_AFTER");
         return s ? atoll(s) : -1LL;
     }();
     static std::atomic<long long> n{ 0 };
@@ -134,7 +134,7 @@ const std::string & xdna_xclbin() {
     static const std::string path = []() -> std::string {
         namespace fs = std::filesystem;
         std::error_code ec;
-        const char * s = xdna_env("GGML_XDNA_KERNELS");
+        const char * s = xdna_env("ZEST_KERNELS");
         if (!s || !*s) {
             const fs::path p = xdna_module_dir() / "bfp16_gemm.xclbin";
             return fs::is_regular_file(p, ec) ? p.u8string() : std::string();
@@ -154,7 +154,7 @@ const std::string & xdna_qxclbin() {
     static const std::string path = []() -> std::string {
         namespace fs = std::filesystem;
         std::error_code ec;
-        const char * s = xdna_env("GGML_XDNA_QKERNELS");
+        const char * s = xdna_env("ZEST_QKERNELS");
         const fs::path p = s && *s ? fs::u8path(s) : xdna_module_dir() / "bfpq_gemm.xclbin";
         if (fs::is_regular_file(p, ec)) return p.u8string();
         if (fs::is_regular_file(p / "final.xclbin", ec)) return (p / "final.xclbin").u8string();
@@ -292,8 +292,8 @@ bool xdna_npu_usable(std::string & why) {
     static std::string reason;
     static const bool ok = [] {
         if (xdna_xclbin().empty()) {
-            const char * s = xdna_env("GGML_XDNA_KERNELS");
-            reason = s && *s ? std::string("GGML_XDNA_KERNELS=") + s + " names no xclbin"
+            const char * s = xdna_env("ZEST_KERNELS");
+            reason = s && *s ? std::string("ZEST_KERNELS=") + s + " names no xclbin"
                              : std::string("no bfp16_gemm.xclbin next to ") + LIBRARY;
             return false;
         }
@@ -345,7 +345,7 @@ xdna_npu::~xdna_npu() {
 }
 
 bool xdna_npu::init(int n_threads, std::string & err) {
-    if (xdna_xclbin().empty()) { err = "GGML_XDNA_KERNELS names no xclbin"; return false; }
+    if (xdna_xclbin().empty()) { err = "ZEST_KERNELS names no xclbin"; return false; }
     npu_ = std::make_unique<npu_bfp16>();
     pool_ = std::make_unique<thread_pool>(n_threads);
     batch_ = std::make_unique<npu_bfp16::batch>(*npu_);
@@ -381,7 +381,7 @@ bool xdna_npu::open(std::string & err, bool quant) {
         opened_ = true;
     }
     if (quant && qkernel_ < 0) {
-        if (xdna_qxclbin().empty()) { err = "no bfpq_gemm.xclbin (GGML_XDNA_QKERNELS)"; return false; }
+        if (xdna_qxclbin().empty()) { err = "no bfpq_gemm.xclbin (ZEST_QKERNELS)"; return false; }
         qkernel_ = npu_->open_kernel(xdna_qxclbin(), err);
         if (qkernel_ < 0) return false;
     }

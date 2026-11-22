@@ -132,7 +132,7 @@ New-Item -ItemType Directory -Force "$demo\cache", "$demo\config" | Out-Null
     }
 } | ConvertTo-Json -Depth 4 | Set-Content "$demo\config\config.json"
 $env:GGML_BACKEND_PATH = "$llama\ggml-zest.dll"
-$env:GGML_XDNA_TRACE = '1'
+$env:ZEST_TRACE = '1'
 & $lemond "$demo\cache" "$demo\config" --port 13315 --host 127.0.0.1 --no-broadcast
 ```
 
@@ -168,6 +168,29 @@ single-request check. The model's bare ID also works when unambiguous;
 Clients can now send ordinary OpenAI-compatible chat requests to
 `http://127.0.0.1:13315/api/v1`, naming that model. Prompts under 1,024 tokens
 stay on the GPU by default. Use a long prompt to demonstrate the NPU.
+
+## Settings
+
+Zest's settings are `ZEST_*` environment variables. Lemonade's model options
+go to llama-server's command line, which can't carry them, so set them in the
+terminal before starting the server. llama-server inherits them from
+Lemonade:
+
+```powershell
+$env:ZEST_SPLIT = 'on'
+.\Start-Lemonade.cmd
+```
+
+The one most people will notice is `ZEST_SPLIT`, the row split, where the GPU
+works on part of each big prompt chunk while the NPU does the rest. It's off
+by default on Strix Point and other Radeon 800M laptops, because it was
+slower there (2026-11-21, Radeon 890M: 1.24-1.31x the GPU alone with it on,
+1.48-1.58x with it off). Elsewhere it's on, with half the rows each.
+`ZEST_TRACE=1` prints which setting was used and why.
+
+Every setting is listed in the
+[technical guide](technical-guide.md#settings). The old `GGML_XDNA_*` names
+still work for now, with a warning.
 
 ## Measure your model
 

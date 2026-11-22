@@ -83,7 +83,7 @@ int main() {
     const double gelu_table = 3e-3;  // ggml-cpu's GELUs read a 16-bit table; the GPU's and ours compute them
     // Rotary angles at positions in the thousands: ours match the CPU's, the GPU's float32 sines and cosines differ
     // from them by about 1e-4 (as they do when the GPU runs a model alone).
-    const char * host_only = getenv("GGML_XDNA_HOST_ONLY");
+    const char * host_only = getenv("ZEST_HOST_ONLY");
     const double rope_tol = host_only && *host_only ? exact : 3e-4;
     using in_t = std::vector<ggml_tensor *>;
     const auto rope = [&](int n_dims, int mode, int n_ctx_orig, float freq_scale, float ext_factor, bool factors) {

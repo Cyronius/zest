@@ -14,7 +14,7 @@ Results vary from run to run: the processor, GPU and NPU share one chip, its mem
 other programs first. On models under about 3B parameters a round takes seconds, so give those more rounds
 (--rounds 9).
 
---no-split adds a second measurement per round with the row split off (GGML_XDNA_SPLIT=0: the NPU takes whole
+--no-split adds a second measurement per round with the row split off (ZEST_SPLIT=0: the NPU takes whole
 pieces and the GPU waits its turn), in a process of its own with its own GPU-alone figure.
 
 --kl also runs llama-perplexity on the GPU alone and then with the add-on over the same text (--text), and reports
@@ -96,7 +96,7 @@ def kl(model):
 
 
 results = []
-configs = [("add-on", {})] + ([("split off", {"GGML_XDNA_SPLIT": "0"})] if a.no_split else [])
+configs = [("add-on", {})] + ([("split off", {"ZEST_SPLIT": "0"})] if a.no_split else [])
 for model in a.models:
     name = os.path.basename(model)
     print(f"=== {name}", flush=True)

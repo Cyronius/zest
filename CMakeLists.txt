@@ -12,8 +12,8 @@ set(GGML_HEADERS "${CMAKE_SOURCE_DIR}/third_party/ggml-b10944" CACHE PATH "match
 set(GGML_IMPLIB_DIR "${CMAKE_SOURCE_DIR}/third_party" CACHE PATH "generated ggml import libs")
 
 # Without the NPU path the backend runs its claimed matmuls on a CPU
-# reference only, like GGML_XDNA_HOST_ONLY=1.
-option(GGML_XDNA_NPU "build the NPU path" ON)
+# reference only, like ZEST_HOST_ONLY=1.
+option(ZEST_NPU "build the NPU path" ON)
 
 if(WIN32)
     set(GGML_LIBS "${GGML_IMPLIB_DIR}/ggml-base.lib" "${GGML_IMPLIB_DIR}/ggml.lib")
@@ -83,7 +83,7 @@ add_custom_command(TARGET ggml-zest POST_BUILD
 # vendor/xrt/LICENSE) and our extern "C" shim over XRT's C++ API under
 # vendor/xrt-shim. The build needs no NPU driver on either system, and the
 # backend loads without one and says so.
-if(GGML_XDNA_NPU)
+if(ZEST_NPU)
     target_sources(ggml-zest PRIVATE
         src/xdna-npu.cpp
         src/xdna-exec.cpp
@@ -234,6 +234,10 @@ add_executable(test-insts-gen tests/test-insts-gen.cpp src/npu/bfp16_insts.cpp s
 target_include_directories(test-insts-gen PRIVATE src/npu)
 target_compile_definitions(test-insts-gen PRIVATE XDNA_INSTS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/insts")
 
+# The row split's default and ZEST_SPLIT's values (pure host code).
+add_executable(test-split-default tests/test-split-default.cpp)
+target_include_directories(test-split-default PRIVATE src)
+
 # The weight packer against the kernel's verified layout (pure host code).
 add_executable(test-bfp16-pack tests/test-bfp16-pack.cpp src/npu/bfp16_pack.cpp)
 target_include_directories(test-bfp16-pack PRIVATE src/npu)
@@ -254,8 +258,9 @@ add_custom_command(TARGET test-qtile-pack POST_BUILD
 # device), "npu" needs the NPU, "nodriver" expects a machine without the NPU
 # driver (CI).
 file(TO_NATIVE_PATH "${GGML_DIST}/${XDNA_LIB}" XDNA_PATH)
-set(XDNA_ENV "GGML_BACKEND_PATH=${XDNA_PATH}" "GGML_XDNA_KERNELS=")
+set(XDNA_ENV "GGML_BACKEND_PATH=${XDNA_PATH}" "ZEST_KERNELS=")
 add_test(NAME insts-gen COMMAND test-insts-gen)
+add_test(NAME split-default COMMAND test-split-default)
 add_test(NAME bfp16-pack COMMAND test-bfp16-pack)
 add_test(NAME qtile-pack COMMAND "${GGML_DIST}/test-qtile-pack${EXE}")
 if(TARGET test-npu-wide)
@@ -267,67 +272,68 @@ add_test(NAME safe-start-no-driver COMMAND "${GGML_DIST}/test-safe-start${EXE}" 
 foreach(t dispatch-gate mul-mat)
     add_test(NAME ${t}-host COMMAND "${GGML_DIST}/test-${t}${EXE}")
     add_test(NAME ${t}-npu COMMAND "${GGML_DIST}/test-${t}${EXE}")
-    set_tests_properties(${t}-host PROPERTIES LABELS host ENVIRONMENT "${XDNA_ENV};GGML_XDNA_HOST_ONLY=1")
-    set_tests_properties(${t}-npu PROPERTIES LABELS npu ENVIRONMENT "${XDNA_ENV};GGML_XDNA_HOST_ONLY=")
+    set_tests_properties(${t}-host PROPERTIES LABELS host ENVIRONMENT "${XDNA_ENV};ZEST_HOST_ONLY=1")
+    set_tests_properties(${t}-npu PROPERTIES LABELS npu ENVIRONMENT "${XDNA_ENV};ZEST_HOST_ONLY=")
 endforeach()
 # every NPU result comes back as NaN: the backend has to catch it and still
 # give the right answer
 add_test(NAME mul-mat-npu-nan COMMAND "${GGML_DIST}/test-mul-mat${EXE}")
-set_tests_properties(mul-mat-npu-nan PROPERTIES LABELS npu ENVIRONMENT "${XDNA_ENV};GGML_XDNA_HOST_ONLY=;GGML_XDNA_NAN_AFTER=0")
+set_tests_properties(mul-mat-npu-nan PROPERTIES LABELS npu ENVIRONMENT "${XDNA_ENV};ZEST_HOST_ONLY=;ZEST_NAN_AFTER=0")
 # every weight under the quantized-weight kernel (Q4_K unpacked on the NPU,
 # the rest copied through): the same answers as the BFP16 kernel's
 add_test(NAME mul-mat-npu-quant COMMAND "${GGML_DIST}/test-mul-mat${EXE}")
-set_tests_properties(mul-mat-npu-quant PROPERTIES LABELS npu ENVIRONMENT "${XDNA_ENV};GGML_XDNA_HOST_ONLY=;GGML_XDNA_WEIGHTS=quant")
+set_tests_properties(mul-mat-npu-quant PROPERTIES LABELS npu ENVIRONMENT "${XDNA_ENV};ZEST_HOST_ONLY=;ZEST_WEIGHTS=quant")
 # every NPU submission fails: the same, through the other way the NPU fails
 add_test(NAME mul-mat-npu-fail COMMAND "${GGML_DIST}/test-mul-mat${EXE}")
-set_tests_properties(mul-mat-npu-fail PROPERTIES LABELS npu ENVIRONMENT "${XDNA_ENV};GGML_XDNA_HOST_ONLY=;GGML_XDNA_FAIL_AFTER=0")
+set_tests_properties(mul-mat-npu-fail PROPERTIES LABELS npu ENVIRONMENT "${XDNA_ENV};ZEST_HOST_ONLY=;ZEST_FAIL_AFTER=0")
 add_test(NAME memory-budget-host COMMAND "${GGML_DIST}/test-memory-budget${EXE}")
 add_test(NAME memory-budget-npu COMMAND "${GGML_DIST}/test-memory-budget${EXE}")
-set(XDNA_BUDGET_ENV "${XDNA_ENV};GGML_XDNA_MAX_COPY_GB=0.05")
-set_tests_properties(memory-budget-host PROPERTIES LABELS host ENVIRONMENT "${XDNA_BUDGET_ENV};GGML_XDNA_HOST_ONLY=1")
-set_tests_properties(memory-budget-npu PROPERTIES LABELS npu ENVIRONMENT "${XDNA_BUDGET_ENV};GGML_XDNA_HOST_ONLY=")
+set(XDNA_BUDGET_ENV "${XDNA_ENV};ZEST_MAX_COPY_GB=0.05")
+set_tests_properties(memory-budget-host PROPERTIES LABELS host ENVIRONMENT "${XDNA_BUDGET_ENV};ZEST_HOST_ONLY=1")
+set_tests_properties(memory-budget-npu PROPERTIES LABELS npu ENVIRONMENT "${XDNA_BUDGET_ENV};ZEST_HOST_ONLY=")
 # the same limit with every copy for the quantized-weight kernel
 add_test(NAME memory-budget-npu-quant COMMAND "${GGML_DIST}/test-memory-budget${EXE}")
-set_tests_properties(memory-budget-npu-quant PROPERTIES LABELS npu ENVIRONMENT "${XDNA_BUDGET_ENV};GGML_XDNA_HOST_ONLY=;GGML_XDNA_WEIGHTS=quant")
+set_tests_properties(memory-budget-npu-quant PROPERTIES LABELS npu ENVIRONMENT "${XDNA_BUDGET_ENV};ZEST_HOST_ONLY=;ZEST_WEIGHTS=quant")
 # A whole feed-forward block on the NPU: gate/up fused and the down multiply
 # chained behind them; the same with a host pass between (and the same bits);
 # under the quantized-weight kernel, which doesn't chain; and on the host.
 add_test(NAME ffn-block-host COMMAND "${GGML_DIST}/test-ffn-block${EXE}")
-set_tests_properties(ffn-block-host PROPERTIES LABELS host ENVIRONMENT "${XDNA_ENV};GGML_XDNA_HOST_ONLY=1")
-# (as shipped the GPU runs half the block's rows at the same time, which the trace has to say)
+set_tests_properties(ffn-block-host PROPERTIES LABELS host ENVIRONMENT "${XDNA_ENV};ZEST_HOST_ONLY=1")
+# (the GPU runs half the block's rows at the same time, which the trace has to say; set
+# outright, since the default follows the GPU and is off on Strix Point)
 add_test(NAME ffn-block-npu COMMAND ${CMAKE_COMMAND} "-DEXE=${GGML_DIST}/test-ffn-block${EXE}"
-    "-DRUN_ENV=${XDNA_ENV};GGML_XDNA_HOST_ONLY=;GGML_XDNA_TRACE=1;GGML_XDNA_TRACE_EVERY=1"
+    "-DRUN_ENV=${XDNA_ENV};ZEST_HOST_ONLY=;ZEST_SPLIT=50;ZEST_TRACE=1;ZEST_TRACE_EVERY=1"
     "-DEXPECT=1 pieces shared with the GPU" -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/expect-output.cmake")
 set_tests_properties(ffn-block-npu PROPERTIES LABELS npu)
 # the whole block on the NPU, the GPU waiting its turn
 add_test(NAME ffn-block-npu-whole COMMAND "${GGML_DIST}/test-ffn-block${EXE}")
-set_tests_properties(ffn-block-npu-whole PROPERTIES LABELS npu ENVIRONMENT "${XDNA_ENV};GGML_XDNA_HOST_ONLY=;GGML_XDNA_SPLIT=0")
+set_tests_properties(ffn-block-npu-whole PROPERTIES LABELS npu ENVIRONMENT "${XDNA_ENV};ZEST_HOST_ONLY=;ZEST_SPLIT=0")
 add_test(NAME ffn-block-npu-quant COMMAND "${GGML_DIST}/test-ffn-block${EXE}")
-set_tests_properties(ffn-block-npu-quant PROPERTIES LABELS npu ENVIRONMENT "${XDNA_ENV};GGML_XDNA_HOST_ONLY=;GGML_XDNA_WEIGHTS=quant")
+set_tests_properties(ffn-block-npu-quant PROPERTIES LABELS npu ENVIRONMENT "${XDNA_ENV};ZEST_HOST_ONLY=;ZEST_WEIGHTS=quant")
 # with the piece's memory not pinned: Vulkan then stages the copies of its inputs and results itself
 add_test(NAME ffn-block-npu-unpinned COMMAND "${GGML_DIST}/test-ffn-block${EXE}")
-set_tests_properties(ffn-block-npu-unpinned PROPERTIES LABELS npu ENVIRONMENT "${XDNA_ENV};GGML_XDNA_HOST_ONLY=;GGML_XDNA_PINNED=0")
+set_tests_properties(ffn-block-npu-unpinned PROPERTIES LABELS npu ENVIRONMENT "${XDNA_ENV};ZEST_HOST_ONLY=;ZEST_PINNED=0")
 # the row split at another share (the NPU a quarter of the rows); and with
 # every NPU submission failing, where the GPU finishes the NPU's rows
 add_test(NAME ffn-block-npu-split COMMAND ${CMAKE_COMMAND} "-DEXE=${GGML_DIST}/test-ffn-block${EXE}"
-    "-DRUN_ENV=${XDNA_ENV};GGML_XDNA_HOST_ONLY=;GGML_XDNA_SPLIT=25;GGML_XDNA_TRACE=1;GGML_XDNA_TRACE_EVERY=1"
+    "-DRUN_ENV=${XDNA_ENV};ZEST_HOST_ONLY=;ZEST_SPLIT=25;ZEST_TRACE=1;ZEST_TRACE_EVERY=1"
     "-DEXPECT=1 pieces shared with the GPU" -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/expect-output.cmake")
 set_tests_properties(ffn-block-npu-split PROPERTIES LABELS npu)
 add_test(NAME ffn-block-npu-split-fail COMMAND "${GGML_DIST}/test-ffn-block${EXE}")
 set_tests_properties(ffn-block-npu-split-fail PROPERTIES LABELS npu
-    ENVIRONMENT "${XDNA_ENV};GGML_XDNA_HOST_ONLY=;GGML_XDNA_FAIL_AFTER=0")
+    ENVIRONMENT "${XDNA_ENV};ZEST_HOST_ONLY=;ZEST_SPLIT=50;ZEST_FAIL_AFTER=0")
 # (the whole block's rows through the chain: the split is off for this one)
 add_test(NAME ffn-chain-same-bits COMMAND ${CMAKE_COMMAND} "-DEXE=${GGML_DIST}/test-ffn-block${EXE}"
-    "-DENV_BOTH=${XDNA_ENV};GGML_XDNA_HOST_ONLY=;GGML_XDNA_SPLIT=0" "-DENV_A=GGML_XDNA_CHAIN=1" "-DENV_B=GGML_XDNA_CHAIN=0"
+    "-DENV_BOTH=${XDNA_ENV};ZEST_HOST_ONLY=;ZEST_SPLIT=0" "-DENV_A=ZEST_CHAIN=1" "-DENV_B=ZEST_CHAIN=0"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/same-checksum.cmake")
 set_tests_properties(ffn-chain-same-bits PROPERTIES LABELS npu)
 # the host's small steps between NPU matmuls, against ggml's CPU backend
 add_test(NAME host-ops-host COMMAND "${GGML_DIST}/test-host-ops${EXE}")
-set_tests_properties(host-ops-host PROPERTIES LABELS host ENVIRONMENT "${XDNA_ENV};GGML_XDNA_HOST_ONLY=1")
+set_tests_properties(host-ops-host PROPERTIES LABELS host ENVIRONMENT "${XDNA_ENV};ZEST_HOST_ONLY=1")
 # the same graphs with the NPU on: a piece with no multiply in it goes to the
 # GPU, which the trace has to say, and gives ggml's answers
 add_test(NAME bare-piece-npu COMMAND ${CMAKE_COMMAND} "-DEXE=${GGML_DIST}/test-host-ops${EXE}"
-    "-DRUN_ENV=${XDNA_ENV};GGML_XDNA_HOST_ONLY=;GGML_XDNA_TRACE=1;GGML_XDNA_TRACE_EVERY=1"
+    "-DRUN_ENV=${XDNA_ENV};ZEST_HOST_ONLY=;ZEST_TRACE=1;ZEST_TRACE_EVERY=1"
     "-DEXPECT=pieces with no multiply, run by the GPU" -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/expect-output.cmake")
 set_tests_properties(bare-piece-npu PROPERTIES LABELS npu)
 set_tests_properties(insts-gen bfp16-pack qtile-pack PROPERTIES LABELS host)
@@ -340,6 +346,6 @@ add_test(NAME launcher-devices COMMAND "${GGML_DIST}/zest${EXE}" llama-server --
 add_test(NAME launcher-npu-devices COMMAND "${GGML_DIST}/npu${EXE}" llama-server --list-devices)
 set_tests_properties(launcher-devices launcher-npu-devices PROPERTIES
     LABELS host
-    ENVIRONMENT "GGML_BACKEND_PATH=;GGML_XDNA_KERNELS="
+    ENVIRONMENT "GGML_BACKEND_PATH=;ZEST_KERNELS="
     PASS_REGULAR_EXPRESSION "Vulkan0:"
 )

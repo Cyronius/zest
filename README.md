@@ -109,6 +109,27 @@ These are warm prefill timings, excluding model load and weight conversion. They
 
 [Full comparison, method, and model files](docs/model-comparison.md) · [Raw results and traces](docs/results/headline-models-2026-10-21/)
 
+### Rerun on current source, 2026-11-21
+
+The same test with current source, which is newer than the Windows preview,
+on the same laptop and model files. The row split (the GPU working on half of
+each big prompt chunk while the NPU does the other half) is now off by
+default on Strix Point and other Radeon 800M laptops, because it was slower
+here:
+
+| Model / GGUF | GPU only (tok/s) | NPU + GPU, split off (default here) | Split on | v0.2.0, same day |
+|---|---:|---:|---:|---:|
+| LFM2.5-2.6B Q8_0 | 879 | 1,391 · **1.58×** (1.52–1.60) | 1.24× | 1.31× |
+| LFM2.5-1.2B-Instruct Q8_0 | 1,853 | 2,886 · **1.55×** (1.46–1.56) | 1.26× | 1.35× |
+| Qwen3-4B Q4_K_M | 454 | 673 · **1.48×** (1.48–1.51) | 1.31× | 1.29× |
+
+Three warm pairs per model and setting. The GPU alone ran 4–15% faster than in
+October, so compare the speedups rather than the raw speeds. Qwen3.8-27B and
+LFM2.5-350M weren't rerun. To turn the split on anyway, set `ZEST_SPLIT=on`
+before starting the server. Every setting is listed in the
+[technical guide](docs/technical-guide.md#settings).
+[Raw results](docs/results/strix-point-2026-11-21/)
+
 <details>
 <summary>Earlier Qwen3-4B desktop-era comparison</summary>
 

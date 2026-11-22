@@ -4,7 +4,7 @@
 // The kernel is one core program (an xclbin of whole_array_bfp_colwise) that
 // serves every size; each size's instruction stream is made here
 // (npu/bfp16_insts.h).
-// GGML_XDNA_KERNELS names the xclbin: the file itself, a directory holding
+// ZEST_KERNELS names the xclbin: the file itself, a directory holding
 // final.xclbin, or a directory of per-size builds (any one's final.xclbin).
 // A call covers 1024 prompt rows, or 512 for a short remainder.
 //
@@ -17,8 +17,8 @@
 // Q4_K is re-laid for the NPU to unpack (npu/qtile_pack.h), other types are
 // packed as BFP16 and copied through. Its calls run 384, 768 or 1,152 rows.
 // It is its own xclbin and hardware context (bfpq_gemm.xclbin, or
-// GGML_XDNA_QKERNELS), and switching contexts costs ~2.4 ms, so a model's
-// weights all go under one kernel (ggml-zest.cpp, GGML_XDNA_WEIGHTS).
+// ZEST_QKERNELS), and switching contexts costs ~2.4 ms, so a model's
+// weights all go under one kernel (ggml-zest.cpp, ZEST_WEIGHTS).
 #pragma once
 
 #include "ggml.h"
@@ -35,7 +35,7 @@
 
 class thread_pool;
 
-// The kernel's xclbin: GGML_XDNA_KERNELS if set (the file, or a directory
+// The kernel's xclbin: ZEST_KERNELS if set (the file, or a directory
 // holding final.xclbin or per-size builds), else bfp16_gemm.xclbin next to
 // this DLL. Empty when there's none.
 const std::string & xdna_xclbin();
@@ -74,7 +74,7 @@ public:
     // Builds it from the weight's raw ggml bytes: each row is dequantized with
     // ggml and encoded directly into its mapped NPU buffer. It runs in the
     // 16-bit output mode where that's built (half the bytes to read back;
-    // GGML_XDNA_OUT16=0 keeps float32). `quant`: under the quantized-weight
+    // ZEST_OUT16=0 keeps float32). `quant`: under the quantized-weight
     // kernel instead (xdna_npu_has_qshape must hold).
     bool add_weight(const wkey & key, const void * raw, std::string & err, bool quant = false);
 

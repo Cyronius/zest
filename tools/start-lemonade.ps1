@@ -98,12 +98,12 @@ New-Item -ItemType Directory -Force "$StateDir/cache", "$StateDir/config" | Out-
 Set-Content -LiteralPath $marker -Value 'Managed by tools/start-lemonade.ps1'
 
 $oldBackend = $env:GGML_BACKEND_PATH
-$oldTrace = $env:GGML_XDNA_TRACE
-$oldHostOnly = $env:GGML_XDNA_HOST_ONLY
+$oldTrace = $env:ZEST_TRACE
+$oldHostOnly = $env:ZEST_HOST_ONLY
 try {
     $env:GGML_BACKEND_PATH = "$LlamaDir/ggml-zest.dll"
-    $env:GGML_XDNA_TRACE = '1'
-    $env:GGML_XDNA_HOST_ONLY = $null
+    $env:ZEST_TRACE = '1'
+    $env:ZEST_HOST_ONLY = $null
     # PowerShell 5 treats native stderr as an error record, even on a successful probe.
     $probe = New-Object System.Diagnostics.ProcessStartInfo
     $probe.FileName = "$LlamaDir/llama-server.exe"
@@ -170,6 +170,6 @@ try {
     }
 } finally {
     $env:GGML_BACKEND_PATH = $oldBackend
-    $env:GGML_XDNA_TRACE = $oldTrace
-    $env:GGML_XDNA_HOST_ONLY = $oldHostOnly
+    $env:ZEST_TRACE = $oldTrace
+    $env:ZEST_HOST_ONLY = $oldHostOnly
 }

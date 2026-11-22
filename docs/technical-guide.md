@@ -256,7 +256,7 @@ its own GPU column, not across tables.
 Ryzen AI MAX+ 395 with Radeon 8060S, 128 GB, Arch Linux, measured 2026-11-21.
 Tokens a second, and in brackets the slowest and fastest round's speed
 against the GPU alone. "Split off" is the same build with
-`GGML_XDNA_SPLIT=0`: the NPU takes whole pieces and the GPU waits its turn.
+`ZEST_SPLIT=0`: the NPU takes whole pieces and the GPU waits its turn.
 
 | model | quant | GPU alone | with the add-on | split off | rounds |
 |---|---|---|---|---|---|
@@ -296,6 +296,8 @@ against the GPU alone. "Split off" is the same build with
 
 Ryzen AI 9 HX 370 with Radeon 890M, Windows 11, measured 2026-10-05 with an
 earlier build, before the row split.
+Through Lemonade on current source (2026-11-21, split off as is now the
+default here), see the [README's rerun table](../README.md#rerun-on-current-source-2026-11-21).
 
 | model | quant | width | GPU alone, tokens/s | with the add-on | rounds |
 |---|---|---|---|---|---|
@@ -390,7 +392,7 @@ also runs under PowerShell 7, `pwsh bench.ps1 -Model ...`) and for Windows
 ./bench.py --rounds 9 --kl --text long.txt --no-split small.gguf
 ```
 
-`--no-split` adds a column with the row split off (`GGML_XDNA_SPLIT=0`), to
+`--no-split` adds a column with the row split off (`ZEST_SPLIT=0`), to
 see what the split is worth on your machine. Its table is the Strix Halo
 one's: tokens a second, then the slowest and fastest round's speedup.
 
@@ -555,9 +557,9 @@ this repository's README and spec):
   and the rest stay on the GPU, and the add-on says so:
   `xdna: NPU weight copies limited to 20.0 GB (...): the first 49 layers on
   the NPU, the rest on the GPU`. `zest --memory-gb` (or
-  `GGML_XDNA_MAX_COPY_GB`) sets the limit. A second kernel reads Q4_K
+  `ZEST_MAX_COPY_GB`) sets the limit. A second kernel reads Q4_K
   weights as the file holds them and unpacks them on the NPU
-  (`GGML_XDNA_WEIGHTS=quant`, see [Settings](#settings)): about half the
+  (`ZEST_WEIGHTS=quant`, see [Settings](#settings)): about half the
   memory, so more layers fit, but slower, so it is not the default.
 - **On Strix Halo the gain depends on the row split.** That GPU runs these
   multiplies about as fast as the NPU, so with the split off the add-on only
@@ -567,6 +569,13 @@ this repository's README and spec):
   takes the gain away before it slows the GPU alone. What was tried on the
   way is in [the 2026-11-13 result](results/halo-zest-qwen38-27b-2026-11-13.json)
   and the later `halo-*` files next to it.
+- **On Strix Point the split is off by default.** The Radeon 890M has 16
+  compute units to the 8060S's 40, so its half of each piece finishes after
+  the NPU's and the NPU waits. Through Lemonade on 2026-11-21 the split gave
+  1.24–1.31x the GPU alone on three models, against 1.48–1.58x with it off
+  ([results](results/strix-point-2026-11-21/)). The add-on picks the default
+  from the GPU's name (Radeon 8x0M: off; anything else: on), and
+  `ZEST_SPLIT` overrides it.
 - **The NPU holds only so much.** On our 88 GB machine, once the NPU's
   memory passes 26 GB, some of it comes back damaged, with no error. That
   limit is the NPU's own: what the GPU uses doesn't change it. That's why
@@ -646,8 +655,8 @@ Without the launcher, the add-on offers no XDNA0 device and logs
 
 | reason | what to do |
 |---|---|
-| no bfp16_gemm.xclbin next to ggml-zest.dll (or libggml-zest.so) | copy it there, or set `GGML_XDNA_KERNELS` to it |
-| GGML_XDNA_KERNELS=... names no xclbin | fix the path |
+| no bfp16_gemm.xclbin next to ggml-zest.dll (or libggml-zest.so) | copy it there, or set `ZEST_KERNELS` to it |
+| ZEST_KERNELS=... names no xclbin | fix the path |
 | no NPU driver (xrt_coreutil.dll not found) | install the AMD NPU driver |
 | no NPU driver (XRT's libxrt_coreutil.so.2 not found) | Linux: install XRT (see [Linux](#linux)) |
 | the NPU driver's xrt_coreutil.dll (or libxrt_coreutil.so.2) lacks a function this backend uses | the driver is older or newer than the add-on was built for; report it |
@@ -660,7 +669,7 @@ Without the launcher, the add-on offers no XDNA0 device and logs
 | the add-on didn't load | the add-on isn't next to `zest`, or `GGML_BACKEND_PATH` points elsewhere |
 
 **Is it doing anything?** `zest` prints `zest: prompts on the NPU` when it
-turns it on. `set GGML_XDNA_TRACE=1` (`export GGML_XDNA_TRACE=1` on Linux)
+turns it on. `set ZEST_TRACE=1` (`export ZEST_TRACE=1` on Linux)
 prints where the time goes every few
 hundred multiplies. A prompt under 1,024 tokens never reaches the NPU
 (`zest --min-chunk` changes that).
@@ -670,33 +679,59 @@ machine, because the processor, GPU and NPU share one chip and its power
 budget. Compare medians of several runs, not single runs.
 
 **Reporting a problem:** open an issue with your chip, the NPU and GPU driver
-versions, the model, the command, and the output with `GGML_XDNA_TRACE=1`.
+versions, the model, the command, and the output with `ZEST_TRACE=1`.
 
 ## Settings
 
 All optional, and none needed with `zest`. They're environment variables
-(`set GGML_XDNA_TRACE=1` in cmd, `$env:GGML_XDNA_TRACE = "1"` in
-PowerShell, `export GGML_XDNA_TRACE=1` on Linux), read once when llama.cpp
-starts: set them before starting it.
-An empty value counts as unset.
+(`set ZEST_TRACE=1` in cmd, `$env:ZEST_TRACE = "1"` in PowerShell,
+`export ZEST_TRACE=1` on Linux), read once when llama.cpp starts: set them
+before starting it, or before starting Lemonade, whose llama-server inherits
+them. An empty value counts as unset.
 
-| variable | default | |
+llama.cpp's own command line can't carry them: `llama-server` and the other
+programs stop on an option they don't know. The `zest` launcher's
+`--memory-gb` and `--min-chunk` set two of them for you.
+
+Before 2026-11-22 these were named `GGML_XDNA_*` (`GGML_XDNA_TRACE` and so on).
+The old names still work for now, with a warning that names the new one.
+
+### Everyday settings
+
+| variable | default | what it does |
 |---|---|---|
-| `GGML_XDNA_KERNELS` | `bfp16_gemm.xclbin` next to the add-on | another xclbin |
-| `GGML_XDNA_MIN_BATCH` | 1024 | the smallest piece of a prompt, in tokens, the NPU takes (`zest --min-chunk` sets it) |
-| `GGML_XDNA_MIN_MFLOP` | 256 | the smallest multiply the NPU takes, in millions of operations |
-| `GGML_XDNA_COPY_AT_LOAD` | 1 | 1 completes the NPU's weight copies before model load returns; 0 builds them during the first prompt |
-| `GGML_XDNA_MAX_COPY_GB` | memory free at load, less 4 GB or a tenth of memory; on Windows at most 20 | the most memory, in GB, the NPU's weight copies may take; 0 keeps the NPU out (`zest --memory-gb` sets it) |
-| `GGML_XDNA_WEIGHTS` | bfp16 | which NPU kernel the weight copies are for: `bfp16` (9 bits a weight), or `quant` (Q4_K at 4.75 bits, unpacked on the NPU: about half the memory, so more layers fit, but 20-45% slower prefill on Qwen3.8-27B) |
-| `GGML_XDNA_QKERNELS` | `bfpq_gemm.xclbin` next to the add-on | another xclbin for the quantized-weight kernel |
-| `GGML_XDNA_BLOCKS` | 1 | 0 takes only the multiplies, not the steps between them |
-| `GGML_XDNA_STREAMS` | 2 | how many parts a piece is split into, so the CPU and NPU overlap |
-| `GGML_XDNA_SPLIT` | 50 | the NPU's share, in percent, of each prompt piece's rows (in whole 512s); the GPU runs the other rows at the same time. 0: the NPU takes whole pieces and the GPU waits its turn |
-| `GGML_XDNA_CHAIN` | 1 | 0 brings a feed-forward block's middle result back to the CPU between its two multiplies instead of chaining them on the NPU (the answers are the same either way) |
-| `GGML_XDNA_N_THREADS` | all cores | CPU threads for the add-on's own work |
-| `GGML_XDNA_TRACE` | 0 | 1 prints where the time goes |
-| `GGML_XDNA_PINNED` | 1 | 0 reads from the GPU into ordinary memory instead of pinned memory: slower, for software Vulkan devices |
-| `GGML_XDNA_HOST_ONLY` | 0 | 1 runs the NPU's share on the CPU instead: for tests without an NPU |
+| `ZEST_SPLIT` | off on Radeon 800M laptop graphics (Strix Point, Krackan Point); 50 elsewhere | the row split. The NPU takes this share, in percent, of each prompt piece's rows (in whole 512s) and the GPU runs the rest at the same time. `off` or `0`: the NPU takes whole pieces and the GPU waits its turn. `on`: 50. On Strix Point the split was slower (1.24-1.31x the GPU alone against 1.48-1.58x with it off, 2026-11-21), so it's off there unless you set it |
+| `ZEST_MAX_COPY_GB` | memory free at load, less 4 GB or a tenth of memory; on Windows at most 20 | the most memory, in GB, the NPU's weight copies may take; layers that don't fit stay on the GPU. 0 keeps the NPU out (`zest --memory-gb` sets it) |
+| `ZEST_MIN_BATCH` | 1024 | the smallest piece of a prompt, in tokens, the NPU takes; smaller ones go to the GPU (`zest --min-chunk` sets it) |
+| `ZEST_WEIGHTS` | bfp16 | which NPU kernel the weight copies are for: `bfp16` (9 bits a weight), or `quant` (Q4_K at 4.75 bits, unpacked on the NPU: about half the memory, so more layers fit, but 20-45% slower prefill on Qwen3.8-27B) |
+| `ZEST_COPY_AT_LOAD` | 1 | 1 finishes the NPU's weight copies before model load returns; 0 builds them during the first prompt |
+| `ZEST_TRACE` | 0 | 1 prints where the time goes, every 196 multiplies, and the split's setting |
+
+### Tuning
+
+| variable | default | what it does |
+|---|---|---|
+| `ZEST_MIN_MFLOP` | 256 | the smallest multiply the NPU takes, in millions of operations |
+| `ZEST_BLOCKS` | 1 | 0 takes only the multiplies, not the small steps between them |
+| `ZEST_STREAMS` | 2 | how many parts a piece is cut into, so the CPU and NPU overlap |
+| `ZEST_CHAIN` | 1 | 0 brings a feed-forward block's middle result back to the CPU between its two multiplies instead of chaining them on the NPU (the answers are the same either way) |
+| `ZEST_N_THREADS` | all cores | CPU threads for the add-on's own work |
+| `ZEST_PINNED` | 1 | 0 reads from the GPU into ordinary memory instead of pinned memory: slower, for software Vulkan devices |
+| `ZEST_KERNELS` | `bfp16_gemm.xclbin` next to the add-on | another xclbin: the file, or a folder holding it |
+| `ZEST_QKERNELS` | `bfpq_gemm.xclbin` next to the add-on | another xclbin for the quantized-weight kernel |
+
+### For testing and debugging
+
+| variable | default | what it does |
+|---|---|---|
+| `ZEST_TRACE_EVERY` | unset | with `ZEST_TRACE=1`, prints after every piece instead of every 196 multiplies |
+| `ZEST_HOST_ONLY` | 0 | 1 runs the NPU's share on the CPU instead: for tests without an NPU |
+| `ZEST_BLOCK_OPS` | all | a comma list of the small ops block claiming may take (ggml's names, such as `ADD,RMS_NORM`), to find a wrong result op by op |
+| `ZEST_OUT16` | 1 | 0 has the NPU return float32 results instead of 16-bit ones |
+| `ZEST_WRITE_ALL` | 0 | 1 writes every result of a piece back, not only the ones read outside it |
+| `ZEST_DUMP` | unset | 1 prints each small op's inputs and output (first values) |
+| `ZEST_FAIL_AFTER` | unset | n: every NPU submission after the n-th fails, to test that the GPU takes over |
+| `ZEST_NAN_AFTER` | unset | n: every NPU result after the n-th comes back as NaN, to test that damaged results are caught |
 
 ## Building from source
 

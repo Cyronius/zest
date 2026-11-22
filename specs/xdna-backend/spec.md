@@ -30,7 +30,7 @@ built by the top-level `CMakeLists.txt` from `tests/`, because they must link
 the same libraries as the backend. `build.cmd` [`build.sh`] builds and runs
 them (XDNA-BUILD). CTest labels them:
 - `host`: no NPU needed. `test-dispatch-gate`, `test-memory-budget` and
-  `test-mul-mat` run here with `GGML_XDNA_HOST_ONLY=1` (matmuls on the CPU
+  `test-mul-mat` run here with `ZEST_HOST_ONLY=1` (matmuls on the CPU
   reference), and need a Vulkan device.
 - `npu`: `test-dispatch-gate`, `test-memory-budget` and `test-mul-mat` on
   the NPU.
@@ -120,7 +120,7 @@ our pieces never have copied inputs.
 **Test category:** unit
 
 `supports_op` shall return false for `GGML_OP_MUL_MAT` whose batch dimension
-(`ne[1]`) is below `GGML_XDNA_MIN_BATCH` (default 1,024), and true at or
+(`ne[1]`) is below `ZEST_MIN_BATCH` (default 1,024), and true at or
 above it for the weights XDNA-SIZE-POLICY accepts. `npu --min-chunk N` sets
 the variable (XDNA-LAUNCHER).
 
@@ -151,7 +151,7 @@ add-on's faster level every time (see XDNA-CHUNK-WARNING); back to 1,024 on
 **Applies to:** Zest
 
 Added and retired the same day. The backend warned once when llama.cpp's
-prompt chunk (`-ub`, 512 by default) was below `GGML_XDNA_MIN_BATCH`. The
+prompt chunk (`-ub`, 512 by default) was below `ZEST_MIN_BATCH`. The
 owner dropped it in favour of README guidance (recommend `-ub 2048`). On an
 idle machine the NPU only tied the GPU at 512-token chunks (0.98–1.07x), so
 the default costs nothing; it just forgoes the 13–18% that 2,048-token chunks
@@ -171,7 +171,7 @@ loses at 512 (0.80x); see XDNA-BATCH-GATE.
 **Test category:** unit
 
 `supports_op` shall also return false when the matmul is below
-`GGML_XDNA_MIN_MFLOP` (default 256) MFLOP, computed as
+`ZEST_MIN_MFLOP` (default 256) MFLOP, computed as
 `2 * src0->ne[0] * src0->ne[1] * batch`.
 
 A dispatch costs something regardless of size, so a small matmul is cheaper
@@ -198,7 +198,7 @@ least 128, and N at most 32,768 once padded up to a multiple of 512 (the
 backend pads the weight's NPU copy with zero rows and reads back only the
 real columns).
 
-On the NPU and with block claiming on (`GGML_XDNA_BLOCKS`, default on), it
+On the NPU and with block claiming on (`ZEST_BLOCKS`, default on), it
 shall also accept a small op when all of these hold: the backend's
 executor implements it in that variant (XDNA-HOST-OPS: RMS_NORM; MUL by a
 scale row; ADD of two same-shape tensors, or of a bias row; SCALE; ROPE,
@@ -206,7 +206,7 @@ normal or NeoX, over all or part of each head, with or without YaRN and
 frequency factors; GLU as SwiGLU, GeGLU (tanh, erf or quick) or ReGLU, on
 two tensors or on one holding both halves; RESHAPE); a scale or bias row,
 or frequency factors, is a plain leaf (kept once, like a weight); it covers
-at least `GGML_XDNA_MIN_BATCH` tokens; one of its inputs comes from an op
+at least `ZEST_MIN_BATCH` tokens; one of its inputs comes from an op
 the policy accepts; and none of its inputs has its shape and may sit in
 host memory (a graph input, a `GET_ROWS` result such as the token
 embeddings, or a tensor already in a host buffer). It shall decline every
@@ -235,7 +235,7 @@ cache are views, so attention's own matmuls never match.
 Once the NPU has failed during a run (XDNA-NPU-FAILURE), it shall decline
 everything.
 
-**Acceptance criteria (unit; in host-only mode, `GGML_XDNA_HOST_ONLY=1`, and
+**Acceptance criteria (unit; in host-only mode, `ZEST_HOST_ONLY=1`, and
 on the NPU):**
 - batch 2048, q4_0 2048x2048 → claimed
 - a matmul whose left side is a view of a larger tensor → not claimed
@@ -251,7 +251,7 @@ on the NPU):**
   → claimed on the NPU; not claimed host-only
 - `ADD` of a claimable matmul and a computed row → not claimed
 
-**Verification (manual, block claiming):** run with `GGML_XDNA_DUMP=1` and
+**Verification (manual, block claiming):** run with `ZEST_DUMP=1` and
 check that each `xdna piece:` line on Qwen3-1.7B spans o-projection through
 the next layer's k rope, and no piece contains an op outside the list above
 other than views. Measured 2026-09-29: 29 pieces, each as described.
@@ -283,12 +283,12 @@ with it), the count shall start again from nothing.
 Weights with no data (llama.cpp's memory-fitting trial and its load-time
 checks), weights outside a buffer llama.cpp marks as weights, and questions
 asked with no context alive shall not count. Host-only mode
-(`GGML_XDNA_HOST_ONLY=1`) shall decide exactly as the NPU would.
+(`ZEST_HOST_ONLY=1`) shall decide exactly as the NPU would.
 
 The limit is the memory available when the first weight is asked about,
 less what's kept back for llama.cpp's work buffers and the rest of the
 machine: the larger of 4 GB and a tenth of the machine's memory, and on
-Windows at most 20 GiB. `GGML_XDNA_MAX_COPY_GB` (in GiB, fractions allowed)
+Windows at most 20 GiB. `ZEST_MAX_COPY_GB` (in GiB, fractions allowed)
 sets it instead, with no cap.
 
 On Linux, "available" is `/proc/meminfo`'s `MemAvailable` (free memory plus
@@ -334,7 +334,7 @@ copies the budget counted once; llama.cpp's tools and server don't do that
 (the router runs one process per model).
 
 **Acceptance criteria** (`tests/test-memory-budget.cpp`, with
-`GGML_XDNA_MAX_COPY_GB=0.05`, 51.2 MiB; weights are 2048x2048 q4_0, a
+`ZEST_MAX_COPY_GB=0.05`, 51.2 MiB; weights are 2048x2048 q4_0, a
 4.5 MiB copy each, four to a layer, in a Vulkan buffer marked as weights;
 in host-only mode and on the NPU):
 - with no context started, a weight is claimed and nothing is counted
@@ -347,15 +347,15 @@ in host-only mode and on the NPU):
 - layer 0's and layer 1's weights are still claimed
 - after the context is freed, a new context claims the layer 3 weight and
   layer 2's fourth
-- with `GGML_XDNA_WEIGHTS=quant` (ctest's `memory-budget-npu-quant`), Q4_K
+- with `ZEST_WEIGHTS=quant` (ctest's `memory-budget-npu-quant`), Q4_K
   weights count at the quantized-weight kernel's 2.375 MiB each: layers 0-4
   are claimed (47.5 MiB), and layer 5's first weight; its second passes the
   limit and layer 5 then is not claimed
 
-**Which kernel a copy is for (added 2026-11-17, `GGML_XDNA_WEIGHTS`).** A
+**Which kernel a copy is for (added 2026-11-17, `ZEST_WEIGHTS`).** A
 second kernel takes weights at their quantized size
 (`kernels/bfp16_gemm/designs/whole_array_bfpq.py`, `bfpq_gemm.xclbin`,
-`GGML_XDNA_QKERNELS` for another): Q4_K re-laid by the host and unpacked on
+`ZEST_QKERNELS` for another): Q4_K re-laid by the host and unpacked on
 the NPU (9,728 bytes per 64 x 256 against BFP16's 18,432), other types
 packed as BFP16 and copied through (5.6% more bytes). Its results equal the
 BFP16 kernel's bit for bit; its GEMMs take ~30% longer (24 of 32 cores
@@ -372,12 +372,12 @@ add-on shall log one warning saying the limit, where it came from, and how
 many layers went to the NPU; when everything fits, one info line (shown
 with `-v`) with the total. Run `zest llama-completion` on Qwen3-1.7B Q4_0
 with a prompt over 512 tokens and `-n 24 --temp 0`, with
-`GGML_XDNA_MAX_COPY_GB` set to 1, 0.01 and 100, and once unset with `-v`.
+`ZEST_MAX_COPY_GB` set to 1, 0.01 and 100, and once unset with `-v`.
 Compare each reply with `llama-completion -dev Vulkan0` on the same
 arguments.
 
 **Passing 2026-10-01:** 1 GB: `limited to 1.0 GB (set by
-GGML_XDNA_MAX_COPY_GB): the first 18 layers on the NPU, the rest on the
+ZEST_MAX_COPY_GB): the first 18 layers on the NPU, the rest on the
 GPU`. 0.01: `no layer fits, so all run on the GPU`. 100: `1.5 GB for 196
 weights`. Unset: `limit 12.7 GB: 21.5 GB free, less 8.8 GB kept back`.
 All four replies identical to the GPU's. `llama-bench -ub 512,1024 -v` at
@@ -397,7 +397,7 @@ copies built shall be the ones the pieces use, so none is built inside a
 piece afterwards. Pieces whose weights have no data (llama.cpp's
 memory-fitting trial) shall build nothing. A copy that fails to build shall
 fail the NPU as XDNA-NPU-FAILURE describes. Freeing the context shall stop
-the building after the copy in progress. `GGML_XDNA_COPY_AT_LOAD=0` shall
+the building after the copy in progress. `ZEST_COPY_AT_LOAD=0` shall
 leave the copies to the first prompt, as before.
 
 Building the copies takes seconds (1.9 s for Qwen3-1.7B and 4.4 s for
@@ -406,13 +406,13 @@ all of it. A server loads and then waits for requests, so its copies are
 ready by the first one. A tool that sends its prompt straight after loading
 (`llama-completion`, `llama-cli -p`) still waits for most of them.
 
-**Verification (manual):** with `GGML_XDNA_TRACE=1` on Qwen3-1.7B Q4_0,
+**Verification (manual):** with `ZEST_TRACE=1` on Qwen3-1.7B Q4_0,
 where the trace line `xdna weight copies:` counts copies built at load and
 inside pieces, and the time a piece waited:
 1. `zest llama-server`; 30 s after it's listening, one `/completion` with a
    ~3,000-token prompt, `n_predict` 24, temperature 0. Copies: all built at
    load, 0 inside pieces, about 0 ms waited.
-2. The same with `GGML_XDNA_COPY_AT_LOAD=0`: 0 at load, all inside pieces;
+2. The same with `ZEST_COPY_AT_LOAD=0`: 0 at load, all inside pieces;
    the reply identical to step 1's.
 3. `zest llama-completion` on the same prompt, `-n 24 --temp 0`: 0 inside
    pieces; the reply identical to `llama-completion -dev Vulkan0`.
@@ -445,7 +445,7 @@ them showed up as plausible but different text, never as a crash.
 **Verification (manual):**
 ```
 set GGML_BACKEND_PATH=...\ggml-zest.dll
-set GGML_XDNA_MIN_BATCH=32
+set ZEST_MIN_BATCH=32
 llama-completion -m Qwen3-1.7B-Q4_0.gguf -f <first 500 bytes of tests/prompts/prose.txt> -n 24 --temp 0 -no-cnv -fa on -b 2048 -ub 2048 -dev XDNA0,Vulkan0
 ```
 and the same with `-dev Vulkan0`. The 24 generated tokens must match.
@@ -459,7 +459,7 @@ identical.
 **Measured 2026-10-12**, after the small-op list grew (issue #14): a
 1,700-token prompt (the start of the README), `-ub 2048`, 24 greedy tokens,
 before and after, against the GPU alone, and the NPU pieces per prompt
-chunk (`GGML_XDNA_DUMP=1`):
+chunk (`ZEST_DUMP=1`):
 
 | model | the step it gained | pieces, before → after | reply |
 |---|---|---|---|
@@ -520,7 +520,7 @@ Vulkan0" only and produce the same text; the third must produce the same text
 too (XDNA-MUL-MAT-AGREES keeps it within rounding).
 
 **Measured 2026-09-29** (Qwen3-1.7B Q4_0, a 105-token prompt,
-`GGML_XDNA_MIN_BATCH=32`, `-b 2048 -ub 2048 -fa on`): the 24 generated tokens
+`ZEST_MIN_BATCH=32`, `-b 2048 -ub 2048 -fa on`): the 24 generated tokens
 are identical with `-dev Vulkan0` and with `-dev XDNA0,Vulkan0`. Reply
 generation ran at 64–66 tok/s either way.
 
@@ -532,7 +532,7 @@ generation ran at 64–66 tok/s either way.
 
 When llama.cpp loads the backend, it shall load whether or not the NPU
 driver is installed, and offer the XDNA0 device only if all of these hold:
-- the kernel's xclbin is found: `GGML_XDNA_KERNELS` if set, else
+- the kernel's xclbin is found: `ZEST_KERNELS` if set, else
   `bfp16_gemm.xclbin` next to `ggml-zest.dll` [`libggml-zest.so`];
 - the NPU driver's `xrt_coreutil.dll` is found and exports, by name, every
   function the backend uses (`vendor/xrt-implib/xrt_coreutil.def`). The DLL
@@ -569,7 +569,7 @@ have the same NPU and should pass.
 
 Otherwise it shall offer no device and log one line saying which check
 failed, so llama.cpp runs as if the backend weren't there. The exception is
-host-only mode (`GGML_XDNA_HOST_ONLY=1`), which offers the device and runs
+host-only mode (`ZEST_HOST_ONLY=1`), which offers the device and runs
 claimed matmuls on a CPU reference, for tests and CI without an NPU. An
 empty setting counts as unset.
 
@@ -590,7 +590,7 @@ Known gap (found 2026-09-30): with no device offered, a command that names
 **Verification (manual, the other checks):** on this machine, `llama-bench
 --list-devices` with no settings lists XDNA0 and logs `xdna: NPU "NPU
 Strix", ..., test multiply right (20 ms)` (19-22 ms over 13 starts). With
-`GGML_XDNA_KERNELS` naming an older build that loads but never finishes
+`ZEST_KERNELS` naming an older build that loads but never finishes
 (`kernels/bfp16_gemm/build/whole_array_bfp_acc_bf16d2/
 1024x2048x2048_128x64x64_c8`), it logs `not offering XDNA0: the NPU "NPU
 Strix" couldn't run a test multiply (no answer within 5000 ms)`, llama-bench
@@ -630,14 +630,14 @@ piece, the CPU reference still does, as before. New prompts are scheduled
 afresh and never reach the backend.
 
 **Acceptance criteria** (`tests/test-mul-mat.cpp`, on the NPU): run as
-`mul-mat-npu-fail` with `GGML_XDNA_FAIL_AFTER=0` (every NPU submission
+`mul-mat-npu-fail` with `ZEST_FAIL_AFTER=0` (every NPU submission
 fails), every case passes against the fp64 reference, as in `mul-mat-npu`.
 `mul-mat-npu-nan` (XDNA-NPU-RESULT-CHECK) exercises the same path from a
 NaN.
 
-**Verification (manual):** `GGML_XDNA_FAIL_AFTER=n` makes every NPU
+**Verification (manual):** `ZEST_FAIL_AFTER=n` makes every NPU
 submission after the n-th fail.
-- Qwen3-1.7B Q4_0, the 105-token prompt, `GGML_XDNA_MIN_BATCH=32
+- Qwen3-1.7B Q4_0, the 105-token prompt, `ZEST_MIN_BATCH=32
   -b 2048 -ub 2048`:
   - with n = 0 and n = 30, the run completes and logs one "the NPU failed"
     line;
@@ -684,7 +684,7 @@ reads. Damage that gives finite wrong values isn't caught; none has been
 seen.
 
 **Acceptance criteria** (`tests/test-mul-mat.cpp`, run as `mul-mat-npu-nan`
-on the NPU with `GGML_XDNA_NAN_AFTER=0`, which turns every NPU result to NaN
+on the NPU with `ZEST_NAN_AFTER=0`, which turns every NPU result to NaN
 once it's back):
 - every case passes against the fp64 reference, as in `mul-mat-npu`
 
@@ -693,7 +693,7 @@ NaN; with it, all pass.
 
 **Verification (manual, block claiming):**
 - Qwen3-1.7B Q4_0, a prompt over 1,024 tokens, `-n 24 --temp 0`, with
-  `GGML_XDNA_NAN_AFTER=20`: the run completes, logs one `the NPU failed (the
+  `ZEST_NAN_AFTER=20`: the run completes, logs one `the NPU failed (the
   NPU's results held NaN or infinity ...)` line, and the reply matches the
   GPU's.
 - Qwen3.8-27B UD-IQ3_S, the 3,846-token prompt: with `npu --memory-gb 30`
@@ -772,7 +772,7 @@ llama-completion` (which passes `-ub 2048`), `-n 8 --temp 0`:
   once, the run finishes, and the reply is sensible
 - a model of width under 2,048: the narrow line appears exactly once, with the
   right width
-- Qwen3-1.7B (width 2,048): neither line, and `GGML_XDNA_TRACE=1` shows NPU
+- Qwen3-1.7B (width 2,048): neither line, and `ZEST_TRACE=1` shows NPU
   pieces, so the silence is the width rule and not an idle backend
 - the same narrow model through `zest llama-server`: no line while it loads,
   then the line on the first real prompt
@@ -824,7 +824,7 @@ concatenated (`docs`, `tools` and `examples` `*.md`, 265k tokens).
   `n_probs` 10. The first generated token must match in every request.
 - The router: `llama-server --models-preset <ini with two models> -np 4
   -c 16384`, 12 prompts to each model at the same time. The same check,
-  and `GGML_XDNA_TRACE=1` shows both child processes' NPU pieces.
+  and `ZEST_TRACE=1` shows both child processes' NPU pieces.
 
 **Measured 2026-09-30:**
 - 4 prompts per chunk: KL 0.0052, 96.2% same top token, identical at
@@ -855,7 +855,7 @@ Every model in the README's Results and Accuracy tables shall have passed
 three checks with the llama.cpp release the add-on ships with:
 
 1. **It runs.** `zest llama-completion` with a prompt over 1,024 tokens, 32
-   greedy tokens, `GGML_XDNA_TRACE=1`: it finishes, prints no `xdna: the NPU
+   greedy tokens, `ZEST_TRACE=1`: it finishes, prints no `xdna: the NPU
    failed` line, and the trace shows NPU pieces.
 2. **Its answers are close to the GPU's.** Mean KL divergence against the GPU
    alone under about 0.01 for a dense model. Mixture-of-experts models are
@@ -971,7 +971,7 @@ blocks in the layout of the second's activation operand, and the second
 reading that buffer on the NPU. The host neither reads the middle result
 nor packs it. Otherwise (the result read elsewhere or outside the piece, an
 op between, either weight under the quantized-weight kernel, a feed-forward
-width that is not a multiple of 256, or `GGML_XDNA_CHAIN=0`) the two run as
+width that is not a multiple of 256, or `ZEST_CHAIN=0`) the two run as
 before, with a host pass between them.
 
 The answers shall not change: mode 3 rounds each value to bf16 as mode 2
@@ -993,7 +993,7 @@ XDNA-NPU-RESULT-CHECK then catches.
 
 **Verification (manual, the model):** on Qwen3.8-27B Q4_K_M, the KL
 divergence check of `tools/linux-npu-check.sh` shall print the same figures
-with `GGML_XDNA_CHAIN=0` and without it, and `GGML_XDNA_TRACE=1` shall show
+with `ZEST_CHAIN=0` and without it, and `ZEST_TRACE=1` shall show
 fewer host passes without it.
 
 **Passing 2026-11-18:** `npu-wide` passes; on the 27B the mean KL divergence
@@ -1007,8 +1007,9 @@ fall from 576 to 520.
 **Applies to:** Zest
 **Test category:** integration
 
-The backend shall give the NPU `GGML_XDNA_SPLIT` percent (default 50; 0
-turns the split off, and the NPU takes whole pieces) of each claimed piece's
+The backend shall give the NPU `ZEST_SPLIT` percent (the default follows
+the GPU, XDNA-SPLIT-DEFAULT; 0 or `off` turns the split off, and the NPU takes
+whole pieces; `on` is 50) of each claimed piece's
 rows (rounded to whole 512s, at least
 512 for each device; pieces under 1,024 rows are not split) and run the
 remaining rows of the same piece on the GPU at the same time: every op in a
@@ -1032,7 +1033,7 @@ claimed piece works row by row, so the two halves are independent.
   the GPU's share only if an op of the piece reads it.
 - A piece with something the row view doesn't cover (an op's tensor whose
   rows don't run along its last dimension in use, a computed scale or bias
-  row) is not split, and `GGML_XDNA_TRACE=1` says which.
+  row) is not split, and `ZEST_TRACE=1` says which.
 
 The answers move toward the GPU's own: its rows are exactly what the GPU
 alone computes.
@@ -1042,15 +1043,15 @@ alone computes.
   CPU's, the NPU has not failed, and the trace says the piece was shared
   (the block ends with a transpose of its result and a reshape of an
   unrelated tensor, as the 27B's pieces do)
-- `ffn-block-npu-split`: the same with `GGML_XDNA_SPLIT=25`
-- `ffn-block-npu-whole`: with `GGML_XDNA_SPLIT=0` the result is as close,
+- `ffn-block-npu-split`: the same with `ZEST_SPLIT=25`
+- `ffn-block-npu-whole`: with `ZEST_SPLIT=0` the result is as close,
   the NPU running every row
-- `ffn-block-npu-split-fail`: with `GGML_XDNA_FAIL_AFTER=0`, the backend
+- `ffn-block-npu-split-fail`: with `ZEST_FAIL_AFTER=0`, the backend
   reports the failure and the block's result is still close to the CPU's
 
 **Verification (manual, the model):** the KL divergence check and a
 24-token reply after a prompt over 1,024 tokens on Qwen3.8-27B;
-`GGML_XDNA_TRACE=1` prints how many pieces were shared.
+`ZEST_TRACE=1` prints how many pieces were shared.
 
 **Status 2026-11-19:** passing. With the GPU to itself and every piece
 shared, a 50% split gave 431.5 tokens/s at 2,048 tokens on Qwen3.8-27B
@@ -1068,6 +1069,53 @@ with the split off), 1.26x on Qwen3.5-2B, 1.23x on Qwen3.5-9B, and on two
 mixture-of-experts models 0.96x and 1.05x, against 0.84x and 0.92x with it
 off (`docs/results/halo-moe-2026-11-19.json`). With a second job on the GPU
 it led as well. Measured on Linux on Strix Halo only so far.
+
+**Off by default on Strix Point since 2026-11-22** (the owner's decision,
+"turn off by default on strix point"): on a Ryzen AI 9 HX PRO 370 / Radeon
+890M through Lemonade 2026.43.3, the 50% split gave 1.31x the GPU alone on
+Qwen3-4B Q4_K_M, 1.24x on LFM2.5-2.6B Q8_0 and 1.26x on LFM2.5-1.2B Q8_0,
+against 1.48x, 1.58x and 1.55x with it off (three warm pairs each,
+2026-11-21). The 890M has 16 compute units to the 8060S's 40, so its half of
+the rows finishes after the NPU's.
+
+---
+
+### XDNA-SPLIT-DEFAULT: The split's default follows the GPU
+**Applies to:** Zest
+**Verification:** test
+
+When `ZEST_SPLIT` is unset or empty, the backend shall use 0 (the split off)
+if the Vulkan GPU's description names a Radeon 800M-series laptop GPU
+(`8x0M`: 890M, 880M, 860M, 840M, 820M; Strix Point and Krackan Point), and 50
+otherwise. A set `ZEST_SPLIT` wins on any GPU. `ZEST_TRACE=1` prints the
+choice and where it came from.
+
+**Acceptance criteria** (`tests/test-split-default.cpp`, host only):
+- `"AMD Radeon(TM) 890M Graphics"` (Windows driver) → 0
+- `"AMD Radeon 890M Graphics (RADV STRIX1)"` (Linux) → 0
+- `"AMD Radeon(TM) 860M Graphics"` → 0
+- `"AMD Radeon(TM) 8060S Graphics"` (Strix Halo), `"AMD Radeon(TM) 780M Graphics"`,
+  `"AMD Radeon RX 7900 XTX"`, `""`, no description → 50
+- `ZEST_SPLIT` of `50` or `on` on an 890M → 50; `0` or `off` on an 8060S → 0;
+  `150` → 100; `-5` → 0
+
+Not yet measured: Krackan Point, and discrete GPUs.
+
+---
+
+### XDNA-ENV-NAMES: Settings are ZEST_* environment variables
+**Applies to:** Zest
+**Verification:** test
+
+Every setting the backend reads from the environment shall be named
+`ZEST_<NAME>`, and `docs/technical-guide.md#settings` lists them all. When
+`ZEST_<NAME>` is unset or empty and the old `GGML_XDNA_<NAME>` (the names
+before 2026-11-22) is set, the backend shall use the old one and print a
+warning that names the new one.
+
+**Acceptance criteria** (`tests/test-split-default.cpp`):
+- `GGML_XDNA_TEST_OLD=7` with `ZEST_TEST_OLD` unset reads as 7
+- with both set, `ZEST_TEST_OLD` wins
 
 ---
 
@@ -1104,7 +1152,7 @@ gains only the faster copy.
 - the block tests (`ffn-block-npu`, `ffn-block-npu-quant`,
   `ffn-block-npu-split`, `ffn-block-npu-split-fail`, `ffn-chain-same-bits`)
   pass: their results come back through this path
-- `ffn-block-npu-unpinned`: with `GGML_XDNA_PINNED=0` (the piece's memory
+- `ffn-block-npu-unpinned`: with `ZEST_PINNED=0` (the piece's memory
   not pinned, so Vulkan stages the copy itself) the block's result is as
   close to the CPU's
 
@@ -1138,7 +1186,7 @@ the NPU, and on the host it costs a read and a write of every tensor it
 touches for a few cheap ops (2.7 ms each, 29 of the 250 pieces a prompt on
 Qwen3.6-35B-A3B and 8 of the 218 on Qwen3.8-27B, 2026-11-19). The GPU has
 the tensors where they are, and takes 0.4 ms.
-`GGML_XDNA_TRACE=1` counts them ("pieces with no multiply, run by the GPU").
+`ZEST_TRACE=1` counts them ("pieces with no multiply, run by the GPU").
 
 **Acceptance criteria:**
 - `bare-piece-npu` (`tests/test-host-ops.cpp` with the NPU on): every small
@@ -1239,7 +1287,7 @@ llama.cpp builds its Linux release on. On this machine, `build.cmd` runs
 `nodriver`.
 
 **Passing 2026-09-30:** on this machine, 7 of 7 tests; in CI, 6 of 6
-(`host` and `nodriver`). CI sets `GGML_XDNA_PINNED=0`: on Windows,
+(`host` and `nodriver`). CI sets `ZEST_PINNED=0`: on Windows,
 lavapipe's pinned memory fails ggml's alignment check.
 
 ---
@@ -1282,11 +1330,11 @@ exit code and being killed are the program's own.]
 `zest`'s own options come before the program's name, as
 `--name value` or `--name=value`:
 - `--memory-gb N` (a number, 0 or more; fractions allowed) shall set
-  `GGML_XDNA_MAX_COPY_GB` to N for the program, replacing any value already
+  `ZEST_MAX_COPY_GB` to N for the program, replacing any value already
   set (XDNA-MEMORY-BUDGET), and the `zest: prompts on the NPU (...)` line
   shall end with `; NPU weight copies limited to N GB`;
 - `--min-chunk N` (a whole number, 1 or more) shall set
-  `GGML_XDNA_MIN_BATCH` to N for the program, replacing any value already
+  `ZEST_MIN_BATCH` to N for the program, replacing any value already
   set (XDNA-BATCH-GATE), and the `zest:` line shall end with
   `; NPU takes chunks of N tokens or more`;
 - a bad or missing value, or an option `zest` doesn't know, shall stop `zest`
@@ -1315,10 +1363,10 @@ while loading (2026-10-02). llama-bench doesn't fit unless asked.
   prints its arguments standing in for llama-echo: every argument arrives
   unchanged, and the exit code comes back.
 - `zest llama-completion -m Qwen3-1.7B-Q4_0.gguf -f <XDNA-BLOCK-AGREES'
-  prompt> -n 24 --temp 0 -no-cnv -fa on` with `GGML_XDNA_MIN_BATCH=32`:
+  prompt> -n 24 --temp 0 -no-cnv -fa on` with `ZEST_MIN_BATCH=32`:
   prints `zest: prompts on the NPU (added -dev XDNA0,Vulkan0 -ts 0,1
   -ub 2048 -b 2048)`, and the 24 tokens match the GPU's.
-- The same with `GGML_XDNA_KERNELS` naming nothing: prints
+- The same with `ZEST_KERNELS` naming nothing: prints
   `zest: running on the GPU only: ...` and runs.
 - With `-dev Vulkan0`: nothing added. With `-ub 512`: only `-dev` and
   `-ts` added. With `-ts 1,1`: no `-ts` added. `zest llama-bench`:
@@ -1339,7 +1387,7 @@ while loading (2026-10-02). llama-bench doesn't fit unless asked.
 
 - The first check again with `--memory-gb 20` and with `--memory-gb=0.5`
   in front of `llama-echo`, the stand-in also printing
-  `GGML_XDNA_MAX_COPY_GB`: the same arguments arrive, the variable is 20
+  `ZEST_MAX_COPY_GB`: the same arguments arrive, the variable is 20
   and 0.5, the exit code comes back. `zest --memory-gb 1 llama-completion`
   on the second check's prompt: the `zest:` line ends with `; NPU weight
   copies limited to 1 GB`, the add-on's warning follows, and the tokens
@@ -1347,8 +1395,8 @@ while loading (2026-10-02). llama-bench doesn't fit unless asked.
   alone and a misspelled option: one line each, exit 1, nothing started.
 - The first check again with `--min-chunk 512` and with
   `--min-chunk=2048 --memory-gb 20`, the stand-in also printing
-  `GGML_XDNA_MIN_BATCH`: the same arguments arrive, the variables are as
-  given, the exit code comes back. With `GGML_XDNA_MIN_BATCH=4096` already
+  `ZEST_MIN_BATCH`: the same arguments arrive, the variables are as
+  given, the exit code comes back. With `ZEST_MIN_BATCH=4096` already
   set, `--min-chunk 512` gives 512. `zest --min-chunk 32 llama-completion`
   on the second check's prompt (105 tokens): the `zest:` line ends with
   `; NPU takes chunks of 32 tokens or more`, the add-on builds its weight
@@ -1430,7 +1478,7 @@ an empty folder, and from there, with no `GGML_*` or `LLAMA_*` variable set:
   is sensible;
 - `zest llama-server -m <the same>`, one chat request of 2,000+ tokens: a
   sensible reply, and the server's log shows the NPU took pieces
-  (`GGML_XDNA_TRACE=1` for this one);
+  (`ZEST_TRACE=1` for this one);
 - every line of `SHA256SUMS.txt` checks, and the file list matches the
   above;
 - `powershell -ExecutionPolicy Bypass -File bench.ps1 -Model <the same>
@@ -1472,7 +1520,7 @@ records XDNA-SAFE-START's line at the session's locked-memory limit and at
 Q4_0 checks XDNA-BLOCK-AGREES, an `zest llama-completion` run with the trace
 on, the KL divergence over this README and spec (under 0.01), paired speed
 (5 rounds, and 3 on Qwen3-4B Q4_K_M), an injected NPU failure
-(`GGML_XDNA_FAIL_AFTER=30`), and the NPU's memory ceiling
+(`ZEST_FAIL_AFTER=30`), and the NPU's memory ceiling
 (`npu-ceiling-repro`, 16 to 40 GiB). Everything goes to one log file.
 
 **Not yet run** (2026-10-12): the owner will boot Linux on the test
@@ -1495,7 +1543,7 @@ doesn't depend on it, and the model-level speed numbers cover it. Measured
 - The host reference matmul in `src/xdna-ref.cpp` is a placeholder for the NPU
   kernels. Its threading, blocking and dequant strategy are implementation
   detail; only XDNA-MUL-MAT-AGREES constrains it.
-- The exact default values of `GGML_XDNA_MIN_BATCH` and `GGML_XDNA_MIN_MFLOP`
+- The exact default values of `ZEST_MIN_BATCH` and `ZEST_MIN_MFLOP`
   are tuning, not contract. The requirements fix the mechanism, not the numbers.
   The same goes for how much memory XDNA-MEMORY-BUDGET keeps back (4 GB or a
   tenth of memory): a starting point, to be tuned from measurements.
@@ -1507,7 +1555,7 @@ doesn't depend on it, and the model-level speed numbers cover it. Measured
   key by location safe: a context never outlives its model. Anything that
   keeps copies longer (a disk cache, copies shared between contexts) must
   key them by content instead.
-- `GGML_XDNA_TRACE=1`: a diagnostic that records the inputs of every op the
+- `ZEST_TRACE=1`: a diagnostic that records the inputs of every op the
   backend declines and reports any of its own results no declined op was seen
   reading. It is the basis for deciding which results block claiming must
   write back.
