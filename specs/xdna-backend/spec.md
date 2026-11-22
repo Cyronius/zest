@@ -851,8 +851,8 @@ larger share as the prompt grows, so the gain shrinks toward even.
 **Applies to:** Zest
 **Test category:** manual
 
-Every model in the README's Results and Accuracy tables shall have passed
-three checks with the llama.cpp release the add-on ships with:
+A model shall pass three checks before it goes into the README's Results or
+Accuracy tables:
 
 1. **It runs.** `zest llama-completion` with a prompt over 1,024 tokens, 32
    greedy tokens, `ZEST_TRACE=1`: it finishes, prints no `xdna: the NPU
@@ -864,8 +864,14 @@ three checks with the llama.cpp release the add-on ships with:
 3. **Its speed is measured, not assumed.** The paired run below, reported as
    measured, including the models that come out slower.
 
-The tables are rerun whenever the pinned llama.cpp release changes, since a
-change to llama.cpp's GPU code moves the ratio as much as a change to ours.
+Each table says which build, llama.cpp release and date its figures come
+from. Tables aren't rerun for every release.
+
+**For a release, or a change of the pinned llama.cpp release:** at least
+two models from different families, Qwen3-4B Q4_K_M among them, shall pass
+all three checks on the build being released. The release notes and the
+README name the models checked. A figure from an earlier build stays in its
+table with that build's name on it until it is next measured.
 
 Why: speed against the GPU varies 0.77x to 1.88x across the models tested,
 and Qwen3-1.7B, the model the first numbers were all taken on, turned out to
